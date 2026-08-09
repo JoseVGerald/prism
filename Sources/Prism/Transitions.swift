@@ -66,10 +66,36 @@ final class Transitions {
     }
 
     /// Why crossfade is unavailable, for the UI to show instead of a slider.
+    /// Why crossfade is off, stated precisely enough to be useful.
+    ///
+    /// An earlier version of this said "iOS ignores volume changes from a web
+    /// player", which is true but too broad, and the broadness hid where the
+    /// real wall is. Measured on an iPhone 16 Pro, iOS 26:
+    ///
+    /// * `video.volume = 0.3` reads back 0.3 and is reverted to 1 within a
+    ///   second. YouTube's own `setVolume(30)` reports 30 forever while the
+    ///   element stays at 1 — a stored number it never applies.
+    /// * Web Audio itself works fine. An oscillator through a `GainNode` and
+    ///   an `AnalyserNode` measured peak 0.25 at gain 0.25 and scaled
+    ///   correctly, and a plain `<audio>` element playing a `data:` WAV
+    ///   through `createMediaElementSource` measured RMS 0.259 at gain 1.0 and
+    ///   0.072 at gain 0.2.
+    /// * The *same* graph fed by YouTube's element, with the player at state 1
+    ///   and `currentTime` advancing, measures **exactly zero**.
+    ///
+    /// The difference is MSE. YouTube plays through Media Source Extensions —
+    /// the element's `src` is a `blob:` — and MSE-backed media is decoded by
+    /// the platform pipeline, which iOS will not route into Web Audio. So the
+    /// blocker is not "no gain on iOS", it is "no gain over MSE media", and
+    /// Prism cannot supply the audio any other way: every audio format
+    /// YouTube offers is `signatureCipher`, with no plain URL.
     static var unsupportedReason: String? {
         isSupported ? nil
-            : "iOS ignores volume changes from a web player, so a crossfade "
-            + "would play both tracks at full volume instead of blending them."
+            : "YouTube plays through Media Source Extensions, and iOS will not "
+            + "route that audio into Web Audio, where the volume control lives. "
+            + "The player's own volume setting is accepted and then ignored, so "
+            + "a crossfade would play both tracks at full volume instead of "
+            + "blending them."
     }
 
     /// Shortest blend Prism will perform. Anything under this is not a mix.

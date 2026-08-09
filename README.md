@@ -262,6 +262,48 @@ became three rather than none. On one line, zero. The offenders were
 `#nav-bar-background` and `#player-bar-background`, which are separate elements
 from the `ytmusic-nav-bar` and `ytmusic-player-bar` components already hidden.
 
+### Crossfade on iOS: the wall is MSE, not gain
+
+"iOS has no gain control" was the working explanation for a long time. It is
+wrong, and the imprecision mattered — it made the problem look like a platform
+limitation with no shape, when it is actually one specific routing rule.
+
+Measured on an iPhone 16 Pro, iOS 26, signed in, on a real Premium stream:
+
+| what | result |
+|---|---|
+| `video.volume = 0.3` | reads 0.3, reverted to 1 within a second |
+| `movie_player.setVolume(30)` | `getVolume()` says 30 forever, element stays 1 |
+| `video.muted = true` | sticks — but it is binary |
+| oscillator → GainNode → AnalyserNode | peak 0.25 at gain 0.25, scales correctly |
+| plain `<audio>` (`data:` WAV) → `createMediaElementSource` → GainNode | RMS **0.259** at gain 1.0, **0.072** at gain 0.2 |
+| YouTube's element → the *same* graph, state 1, clock advancing | **exactly 0** |
+
+So Web Audio works on iOS. `createMediaElementSource` works on iOS. `GainNode`
+attenuates on iOS. What does not work is feeding an **MSE-backed** element into
+the graph: YouTube's `<video>` has a `blob:` src, MSE media is decoded by the
+platform pipeline, and iOS will not route that into Web Audio. The node is
+attached and delivers silence.
+
+The control experiment is the whole point. Measuring the YouTube element alone
+gives zero and proves nothing — a broken analyser, a paused player and a real
+routing block all read the same. (This bit me: the first run of this test
+measured zero at every gain with the player at **state 2**, paused, which is
+the same trap the "measure with media loaded" rule exists for.) Only the
+oscillator and the plain-element controls, through the same nodes, separate
+"Web Audio is broken" from "this one element cannot be routed".
+
+**Why this cannot be worked around.** Prism would need to supply the audio as
+an ordinary media element instead of via MSE, and it cannot: every audio format
+in `streamingData.adaptiveFormats` is `signatureCipher` with no plain `url`
+field — 140, 141, 249, 250, 251 and 774 all of them. Getting a playable URL
+means reimplementing YouTube's signature descrambling, which is deliberately
+defeating an access control, so it is not on the table here.
+
+What survives on iOS is everything except the blend: tempo is exact (1.1 set →
+1.100 measured, pitch preserved), `muted` is reliable, and the planner with its
+81 assertions runs in the iOS binary already.
+
 ### Nothing on iPhone ever asked for the library
 
 The Library tab showed "Nothing in your library yet" on every launch, and the
