@@ -1,0 +1,356 @@
+import Foundation
+import AutoMixCore
+
+// Tests for AutoMixCore.
+//
+// A hand-rolled harness rather than XCTest or swift-testing: `swift test` on
+// macOS needs Xcode's XCTest runner, and Xcode is unusable on this machine
+// (unaccepted licence). This runs anywhere a Swift toolchain does.
+//
+//     swift run AutoMixTests
+
+var failures: [String] = []
+var checks = 0
+var currentSuite = ""
+
+@MainActor func suite(_ name: String) {
+    currentSuite = name
+    print("\n\u{001B}[1m\(name)\u{001B}[0m")
+}
+
+@MainActor func check(_ condition: Bool, _ description: String) {
+    checks += 1
+    if condition {
+        print("  ✓ \(description)")
+    } else {
+        print("  ✗ \(description)")
+        failures.append("\(currentSuite): \(description)")
+    }
+}
+
+func close(_ a: Double, _ b: Double, _ tolerance: Double = 1e-9) -> Bool {
+    abs(a - b) <= tolerance
+}
+
+// MARK: - Camelot wheel
+
+suite("Camelot wheel")
+
+check(MusicalKey(pitchClass: 0, mode: .major).camelot == "8B", "C major is 8B")
+check(MusicalKey(pitchClass: 9, mode: .minor).camelot == "8A", "A minor is 8A")
+check(MusicalKey(pitchClass: 7, mode: .major).camelot == "9B", "G major is 9B")
+check(MusicalKey(pitchClass: 11, mode: .major).camelot == "1B", "B major is 1B")
+
+var roundTripped = true
+for pc in 0..<12 {
+    for mode in [MusicalKey.Mode.major, .minor] {
+        let key = MusicalKey(pitchClass: pc, mode: mode)
+        if MusicalKey(camelot: key.camelot) != key { roundTripped = false }
+    }
+}
+check(roundTripped, "every key survives a round trip through its Camelot code")
+
+let allSlots = (0..<12).flatMap { pc in
+    [MusicalKey(pitchClass: pc, mode: .major).camelot,
+     MusicalKey(pitchClass: pc, mode: .minor).camelot]
+}
+check(Set(allSlots).count == 24, "all 24 slots are used exactly once")
+
+check(MusicalKey(camelot: "13A") == nil, "rejects an out-of-range number")
+check(MusicalKey(camelot: "0B") == nil, "rejects zero")
+check(MusicalKey(camelot: "8C") == nil, "rejects an unknown letter")
+check(MusicalKey(camelot: "") == nil, "rejects empty input")
+
+let c = MusicalKey(camelot: "8B")!
+check(Harmony.relation(from: c, to: c) == .identical, "a key against itself is identical")
+check(Harmony.relation(from: c, to: MusicalKey(camelot: "8A")!) == .relative,
+      "8B → 8A is the relative minor")
+check(Harmony.relation(from: c, to: MusicalKey(camelot: "9B")!) == .adjacent,
+      "8B → 9B is one step round the wheel")
+check(Harmony.relation(from: c, to: MusicalKey(camelot: "7B")!) == .adjacent,
+      "8B → 7B is one step the other way")
+check(Harmony.relation(from: c, to: MusicalKey(camelot: "10B")!) == .energyBoost,
+      "8B → 10B is the two-step lift")
+check(Harmony.relation(from: c, to: MusicalKey(camelot: "2B")!) == .clash,
+      "8B → 2B clashes")
+check(Harmony.relation(from: c, to: MusicalKey(camelot: "9A")!) == .clash,
+      "adjacent number on the other side of the wheel still clashes")
+check(Harmony.relation(from: MusicalKey(camelot: "12B")!,
+                       to: MusicalKey(camelot: "1B")!) == .adjacent,
+      "the wheel wraps from 12 to 1")
+check(Harmony.relation(from: MusicalKey(camelot: "1B")!,
+                       to: MusicalKey(camelot: "12B")!) == .adjacent,
+      "and back from 1 to 12")
+
+// MARK: - Tempo
+
+suite("Tempo")
+
+let same = Tempo.match(from: 128, to: 128)
+check(close(same.rate, 1, 1e-6) && same.acceptable && !same.foldedOctave,
+      "identical tempos need no stretch")
+
+let near = Tempo.match(from: 128, to: 124)
+check(close(near.rate, 128.0 / 124.0, 1e-6) && near.acceptable && abs(near.percentChange) < 6,
+      "a small gap is acceptable")
+
+check(!Tempo.match(from: 130, to: 100).acceptable,
+      "a 30% gap is rejected rather than forced")
+
+let doubleTime = Tempo.match(from: 170, to: 85)
+check(close(doubleTime.rate, 1, 1e-6) && doubleTime.foldedOctave && doubleTime.acceptable,
+      "170 over 85 folds to no stretch at all")
+let halfTime = Tempo.match(from: 85, to: 170)
+check(close(halfTime.rate, 1, 1e-6) && halfTime.foldedOctave && halfTime.acceptable,
+      "and 85 over 170 folds the same way")
+
+let realPair = Tempo.match(from: 84.89, to: 103.88)
+check(!realPair.acceptable && !realPair.foldedOctave,
+      "a real Deezer pair 22% apart is not beat-matched")
+
+check(!Tempo.match(from: 0, to: 120).acceptable, "zero tempo is never acceptable")
+check(!Tempo.match(from: 120, to: 0).acceptable, "and neither is a zero target")
+
+check(close(Tempo.beatDuration(bpm: 120), 0.5), "120 BPM is half a second per beat")
+check(close(Tempo.duration(beats: 8, bpm: 120), 4), "8 beats at 120 BPM is 4 seconds")
+check(close(Tempo.duration(beats: 16, bpm: 96), 10), "16 beats at 96 BPM is 10 seconds")
+
+let poorMatch = TempoMatch(rate: 1.3, foldedOctave: false, acceptable: false)
+check(Tempo.phraseBeats(match: poorMatch, harmonic: nil, energyDelta: 0) == 4,
+      "a poor tempo match gets the shortest phrase")
+let goodMatch = TempoMatch(rate: 1.005, foldedOctave: false, acceptable: true)
+check(Tempo.phraseBeats(match: goodMatch, harmonic: .identical, energyDelta: 0) == 16,
+      "a tight match in the same key gets 16 beats")
+check(Tempo.phraseBeats(match: goodMatch, harmonic: .clash, energyDelta: 0) == 4,
+      "a clashing key never gets a long overlap")
+check(Tempo.phraseBeats(match: goodMatch, harmonic: .identical, energyDelta: 0.6) == 8,
+      "a big loudness jump shortens the phrase")
+
+// MARK: - Blend curves
+
+suite("Blend curves")
+
+var equalPowerFlat = true
+var linearFlat = true
+for i in 0...100 {
+    let t = Double(i) / 100
+    if !close(BlendCurve.equalPower.combined(at: t, correlated: false), 1) { equalPowerFlat = false }
+    if !close(BlendCurve.linear.combined(at: t, correlated: true), 1) { linearFlat = false }
+}
+check(equalPowerFlat, "equal-power holds power flat across two different songs")
+check(linearFlat, "linear holds level flat across two copies of the same song")
+
+check(close(BlendCurve.equalPower.combined(at: 0.5, correlated: true), 2.0.squareRoot()),
+      "equal-power on identical audio lifts to √2 — the +3 dB seam bug")
+check(close(BlendCurve.linear.combined(at: 0.5, correlated: false), 0.7071, 1e-4),
+      "linear on different songs sags to 0.707 — the 3 dB hole")
+
+var endpointsClean = true
+for curve in [BlendCurve.equalPower, .linear] {
+    if !close(curve.gains(at: 0).out, 1) { endpointsClean = false }
+    if !close(curve.gains(at: 0).into, 0) { endpointsClean = false }
+    if !close(curve.gains(at: 1).out, 0) { endpointsClean = false }
+    if !close(curve.gains(at: 1).into, 1) { endpointsClean = false }
+}
+check(endpointsClean, "both curves start and end cleanly")
+check(close(BlendCurve.linear.gains(at: -5).out, 1)
+      && close(BlendCurve.linear.gains(at: 5).into, 1),
+      "gains clamp outside 0…1")
+
+let swap = BassSwap()
+check(close(swap.gains(at: 0).outgoingBass, 1) && close(swap.gains(at: 0).incomingBass, 0),
+      "the outgoing track owns the low end at the start")
+check(close(swap.gains(at: 1).outgoingBass, 0) && close(swap.gains(at: 1).incomingBass, 1),
+      "and the incoming track owns it at the end")
+
+var bassNeverStacks = true
+for i in 0...100 where BassSwap().combinedBass(at: Double(i) / 100) > 1.35 {
+    bassNeverStacks = false
+}
+check(bassNeverStacks, "the two low ends never stack up into mud")
+
+let early = swap.gains(at: 0.25)
+check(early.outgoingBass > 0.8 && close(early.incomingBass, 0),
+      "a quarter in, the incoming low end is still held down")
+
+// MARK: - Transition planning
+
+suite("Transition planning")
+
+@MainActor func track(_ id: String, bpm: Double?, key: String? = nil, energy: Double? = nil,
+           confidence: Double = 1, duration: TimeInterval = 200,
+           introEnd: TimeInterval? = nil) -> TrackAnalysis {
+    TrackAnalysis(id: id, duration: duration, bpm: bpm,
+                  key: key.flatMap(MusicalKey.init(camelot:)),
+                  energy: energy, introEnd: introEnd, confidence: confidence)
+}
+
+let noTempo = AutoMix.plan(from: track("a", bpm: nil), to: track("b", bpm: 120), preferred: 6)
+check(noTempo.duration == 6 && noTempo.beats == nil && noTempo.curve == .equalPower
+      && noTempo.confidence == 0,
+      "no tempo falls back to the plain timed fade")
+
+let lowConfidence = AutoMix.plan(from: track("a", bpm: 120, confidence: 0.2),
+                                 to: track("b", bpm: 120, confidence: 0.2), preferred: 7)
+check(lowConfidence.duration == 7 && lowConfidence.beats == nil,
+      "untrusted analysis falls back too")
+
+let matched = AutoMix.plan(from: track("a", bpm: 120, key: "8A", energy: 0.5),
+                           to: track("b", bpm: 120, key: "8A", energy: 0.5), preferred: 6)
+check(matched.beats == 16 && close(matched.duration, 8, 1e-6) && matched.harmonic == .identical,
+      "a matched pair gets 16 beats at the outgoing tempo — 8 seconds")
+
+let clashing = AutoMix.plan(from: track("a", bpm: 120, key: "8A", energy: 0.5),
+                            to: track("b", bpm: 120, key: "2B", energy: 0.5), preferred: 6)
+check(clashing.harmonic == .clash && clashing.beats == 4 && close(clashing.duration, 6, 1e-6),
+      "clashing keys stay a 4-beat idea but still get the six-second floor")
+
+let limited = AutoMix.plan(from: track("a", bpm: 128), to: track("b", bpm: 124),
+                           preferred: 6, capabilities: .volumeAndSeekOnly)
+check(limited.playbackRateForIncoming == 1 && limited.bassSwap == nil
+      && limited.notes.contains { $0.contains("no time-stretch") },
+      "never promises a stretch or a filter the host cannot perform")
+
+let full = AutoMix.plan(from: track("a", bpm: 128), to: track("b", bpm: 124),
+                        preferred: 6, capabilities: .full)
+check(full.bassSwap != nil && full.tempoRamp != nil,
+      "uses stretch and filtering when the host has them")
+// The invariant that matters is not the incoming rate on its own but that the
+// two tracks end up at the *same* tempo — the outgoing one has moved too.
+check(full.tempoRamp.map { close(128 * $0.outgoingRate, 124 * $0.incomingRate, 1e-6) } == true,
+      "both tracks are bent to one shared tempo")
+
+let absurd = AutoMix.plan(from: track("a", bpm: 90), to: track("b", bpm: 140),
+                          preferred: 6, capabilities: .full)
+check(absurd.playbackRateForIncoming == 1 && absurd.notes.contains { $0.contains("too large") },
+      "refuses to stretch across an absurd gap")
+
+let withIntro = AutoMix.plan(from: track("a", bpm: 120),
+                             to: track("b", bpm: 120, duration: 240, introEnd: 12),
+                             preferred: 6)
+check(close(withIntro.startOffsetForIncoming, 12), "skips a long intro when it can seek")
+
+let slow = AutoMix.plan(from: track("a", bpm: 20, key: "8A", energy: 0.5),
+                        to: track("b", bpm: 20, key: "8A", energy: 0.5),
+                        preferred: 6, maxDuration: 16)
+check(slow.duration <= 16, "duration is clamped to something sane")
+
+let folded = AutoMix.plan(from: track("a", bpm: 170, key: "8A", energy: 0.5),
+                          to: track("b", bpm: 85, key: "8A", energy: 0.5),
+                          preferred: 6, capabilities: .full)
+check(close(folded.playbackRateForIncoming, 1, 1e-6)
+      && folded.notes.contains { $0.contains("half/double time") },
+      "a half-time pair counts as matched, not as a 2× stretch")
+
+// MARK: - Six-second floor
+
+suite("Minimum blend length")
+
+let tiny = AutoMix.plan(from: track("a", bpm: nil), to: track("b", bpm: nil), preferred: 2)
+check(close(tiny.duration, 6), "a 2s preference is lifted to the floor even with no analysis")
+
+let fastPair = AutoMix.plan(from: track("a", bpm: 174, key: "8A", energy: 0.5),
+                            to: track("b", bpm: 174, key: "8A", energy: 0.5), preferred: 3)
+check(fastPair.duration >= 6, "a fast pair still gets at least six seconds")
+check(fastPair.beats == 32,
+      "the phrase is doubled to reach the floor rather than the time being padded")
+
+// 16 beats at 174 BPM is 5.52s, under the floor; 32 beats is 11.03s. Growing
+// the phrase is what keeps the blend landing on a bar line.
+check(close(Tempo.duration(beats: 32, bpm: 174), fastPair.duration, 1e-6),
+      "and the grown phrase is what sets the length")
+
+let cramped = AutoMix.plan(from: track("a", bpm: 120), to: track("b", bpm: 120),
+                           preferred: 6, maxDuration: 3)
+check(cramped.duration <= 3,
+      "running out of track is the one thing allowed to undercut the floor")
+
+let noAnalysisFloor = AutoMix.plan(from: track("a", bpm: 120, confidence: 0.1),
+                                   to: track("b", bpm: 120, confidence: 0.1), preferred: 1)
+check(close(noAnalysisFloor.duration, 6), "the fallback path honours the floor too")
+
+// MARK: - Tempo glide
+
+suite("Tempo glide")
+
+let glide = TempoRampPlanner.plan(outgoingBPM: 120, incomingBPM: 126,
+                                  match: Tempo.match(from: 120, to: 126),
+                                  blendDuration: 8)
+check(glide != nil, "a 5% gap can be met")
+if let g = glide {
+    check(close(120 * g.outgoingRate, 126 * g.incomingRate, 1e-9),
+          "both sides land on exactly one tempo")
+    check(g.outgoingRate > 1 && g.incomingRate < 1,
+          "the slower track speeds up while the faster one eases off")
+    check(abs(g.outgoingRate - 1) * 100 <= TempoRampPlanner.maxOutgoingPercent + 1e-9,
+          "the audible side stays inside the tighter budget")
+    check(g.outgoingSteps.allSatisfy { TempoRampPlanner.maskWindow.contains($0.at) },
+          "every step lands where the outgoing track is quiet enough to hide it")
+    check(g.outgoingSteps.count <= 3, "never more than three dropouts spent on a bend")
+    check(zip(g.outgoingSteps, g.outgoingSteps.dropFirst())
+            .allSatisfy { ($1.at - $0.at) * 8 >= 0.9 },
+          "steps are spaced far enough apart for the pipeline to recover")
+    check(g.outgoingSteps.last.map { close($0.rate, g.outgoingRate, 1e-9) } == true,
+          "the bend finishes on the rate the plan claims")
+}
+
+let sameTempo = TempoRampPlanner.plan(outgoingBPM: 128, incomingBPM: 128,
+                                      match: Tempo.match(from: 128, to: 128),
+                                      blendDuration: 8)
+check(sameTempo?.outgoingSteps.isEmpty == true && sameTempo?.incomingRate == 1,
+      "an identical pair spends no rate changes at all")
+
+let halfTimeGlide = TempoRampPlanner.plan(outgoingBPM: 170, incomingBPM: 85,
+                                     match: Tempo.match(from: 170, to: 85),
+                                     blendDuration: 8)
+check(halfTimeGlide?.outgoingSteps.isEmpty == true,
+      "a half-time pair is already in step and needs no bend")
+
+let impossible = TempoRampPlanner.plan(outgoingBPM: 90, incomingBPM: 140,
+                                       match: Tempo.match(from: 90, to: 140),
+                                       blendDuration: 8)
+check(impossible == nil, "a gap neither side can cover reports no glide rather than a bad one")
+
+// A blend too short to hide even one dropout must not try to bend the outgoing
+// track — it would spend a freeze in the middle of audible music.
+let crampedGlide = TempoRampPlanner.plan(outgoingBPM: 120, incomingBPM: 126,
+                                         match: Tempo.match(from: 120, to: 126),
+                                         blendDuration: 1.2)
+check(crampedGlide?.outgoingSteps.isEmpty == true && crampedGlide?.outgoingRate == 1,
+      "too short a blend beat-matches silently instead of bending audibly")
+check(crampedGlide.map { close(120 * $0.outgoingRate, 126 * $0.incomingRate, 1e-9) } == true,
+      "and the incoming rate still lands them on one tempo")
+
+// Tempo data is missing far more often than not — 0 of 13 tracks on the
+// playlist this was built against — so the no-analysis path is the one most
+// listeners will actually hear.
+let blind = AutoMix.plan(from: track("a", bpm: nil), to: track("b", bpm: nil),
+                         preferred: 8, capabilities: .webPlayer)
+check(blind.tempoRamp != nil, "a transition with no analysis still leans into the mix")
+check(blind.confidence == 0 && blind.playbackRateForIncoming == 1,
+      "but claims no confidence and asks nothing of the incoming track")
+check(blind.tempoRamp.map { $0.outgoingRate < 1 && $0.outgoingRate > 0.95 } == true,
+      "the lean is a gentle ease-off, not a lurch")
+
+let blindNoStretch = AutoMix.plan(from: track("a", bpm: nil), to: track("b", bpm: nil),
+                                  preferred: 8, capabilities: .volumeAndSeekOnly)
+check(blindNoStretch.tempoRamp == nil,
+      "and a host that cannot stretch is never handed a bend to perform")
+
+let unbent = AutoMix.plan(from: track("a", bpm: nil), to: track("b", bpm: nil),
+                          preferred: 8, capabilities: .webPlayer, bendShare: 0)
+check(unbent.tempoRamp == nil, "turning the bend off removes it from the blind path too")
+
+check(close(TempoRampPlanner.foldToOctave(of: 90, bpm: 140), 70),
+      "140 counted against 90 folds to 70")
+check(close(TempoRampPlanner.foldToOctave(of: 170, bpm: 85), 170),
+      "85 counted against 170 folds up, not down")
+
+// MARK: - Result
+
+print("\n\(checks - failures.count)/\(checks) passed")
+if !failures.isEmpty {
+    print("\n\u{001B}[31mFailures:\u{001B}[0m")
+    for f in failures { print("  • \(f)") }
+    exit(1)
+}

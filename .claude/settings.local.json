@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(sw_vers)",
+      "Bash(xcode-select -p)",
+      "Bash(xcodebuild -version)",
+      "Bash(npm -v)",
+      "Bash(python3 -V)",
+      "Bash(swift --version)",
+      "Bash(xcrun --show-sdk-path)",
+      "Bash(xcrun --show-sdk-version)",
+      "Bash(ls \"$\\(xcrun --show-sdk-path\\)/System/Library/Frameworks/\")",
+      "Bash(chmod +x build.sh)",
+      "Bash(swift build *)",
+      "Bash(./build.sh release *)",
+      "Bash(open Prism.app)",
+      "Bash(sips -r 90 /private/tmp/claude-501/-Users-gerald-ideas-wowww/0705d4fb-1a58-4c95-b729-d6db4917368a/scratchpad/ref.jpg --out /private/tmp/claude-501/-Users-gerald-ideas-wowww/0705d4fb-1a58-4c95-b729-d6db4917368a/scratchpad/ref_rot.jpg)",
+      "Bash(sips -g pixelWidth -g pixelHeight /private/tmp/claude-501/-Users-gerald-ideas-wowww/0705d4fb-1a58-4c95-b729-d6db4917368a/scratchpad/ref_rot.jpg)",
+      "mcp__visualize__show_widget"
+    ]
+  }
+}
