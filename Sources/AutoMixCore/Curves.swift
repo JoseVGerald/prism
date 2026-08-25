@@ -18,12 +18,33 @@ public enum BlendCurve: String, Sendable {
     /// pair keeps a coherent sum flat.
     case linear
 
+    /// Equal-power, but with the outgoing track pulled down harder.
+    ///
+    /// Plain equal-power leaves both songs at 0.707 — −3 dB — through the whole
+    /// middle of the blend, so for several seconds neither is in front and the
+    /// overlap reads as two records playing at once. Raising the outgoing gain
+    /// to a power steepens its fall (−4.8 dB at the midpoint at the default
+    /// exponent) and the incoming gain is then *derived* from it rather than
+    /// chosen, so `out² + into² = 1` still holds exactly and the combined
+    /// loudness stays flat. The new track is simply in front sooner.
+    case duckedPower
+
+    /// How hard `duckedPower` leans on the outgoing track. 1 is plain
+    /// equal-power; higher ducks harder. Past about 2.5 the outgoing track
+    /// drops away so fast that the overlap stops sounding like a blend.
+    public static let duckExponent: Double = 1.6
+
     /// Outgoing and incoming gains at `t` in 0…1.
     public func gains(at t: Double) -> (out: Double, into: Double) {
         let x = min(max(t, 0), 1)
         switch self {
         case .equalPower: return (cos(x * .pi / 2), sin(x * .pi / 2))
         case .linear:     return (1 - x, x)
+        case .duckedPower:
+            let out = pow(cos(x * .pi / 2), Self.duckExponent)
+            // Derived, not picked: whatever the outgoing gain is, this is the
+            // incoming gain that keeps the total power at exactly 1.
+            return (out, (1 - out * out).squareRoot())
         }
     }
 

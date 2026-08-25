@@ -21,6 +21,13 @@ final class Engine: NSObject {
     var showingEngine = false
     var lastError: String?
 
+    /// Called after every navigation, once the bridge is back in place.
+    var onDocumentReady: (() -> Void)?
+
+    /// Attributes a queue change Swift is about to cause, so the trace can name
+    /// it rather than blaming YouTube. See `queueChange` in the bridge.
+    func noteQueueCause(_ label: String) { run("noteQueueCause", [label]) }
+
     /// While the user drags the scrubber we stop letting engine ticks fight them.
     var scrubOverride: Double?
 
@@ -80,6 +87,57 @@ final class Engine: NSObject {
                 try? result.write(to: outURL, atomically: true, encoding: .utf8)
             }
         }
+    }
+
+    /// Writes each accepted snapshot to `~/.prism-eval/snapshot.json`.
+    ///
+    /// `in.js` can ask the *page* anything, but it cannot say what Prism itself
+    /// ended up believing — and the gap between the two is exactly where the
+    /// bugs live. A field the bridge sends but Swift silently fails to decode
+    /// looks identical, from the page, to one that works.
+    private var snapshotDumpURL: URL? {
+        guard ProcessInfo.processInfo.environment["PRISM_EVAL"] == "1" else { return nil }
+        return URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".prism-eval/snapshot.json")
+    }
+
+    /// `~/.prism-eval/queue.log`, and only under PRISM_EVAL.
+    private var queueLogURL: URL? {
+        guard ProcessInfo.processInfo.environment["PRISM_EVAL"] == "1" else { return nil }
+        return URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".prism-eval/queue.log")
+    }
+
+    private func logQueueChange(_ data: Data) {
+        guard let url = queueLogURL,
+              let envelope = try? JSONDecoder().decode(QueueTraceEnvelope.self, from: data),
+              let t = envelope.trace else { return }
+
+        let stamp = Self.logStamp.string(from: Date())
+        var line = "\(stamp)  \(t.shape)\n            cause: \(t.cause)"
+        if let playing = t.playing { line += "\n            playing: \(playing)" }
+        if let added = t.added, !added.isEmpty { line += "\n            added: \(added.joined(separator: ", "))" }
+        if let removed = t.removed, !removed.isEmpty { line += "\n            removed: \(removed.joined(separator: ", "))" }
+        line += "\n"
+
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private static let logStamp: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
+    private func dumpSnapshot(_ data: Data) {
+        guard let url = snapshotDumpURL else { return }
+        try? data.write(to: url)
     }
 
     private func buildWebView() {
@@ -214,6 +272,10 @@ final class Engine: NSObject {
         #endif
     }
 
+    /// Switches between the song and its music video, keeping the position.
+    /// See the bridge command for why this drives YouTube's own control.
+    func setAVMode(video: Bool) { run("setAVMode", [video]) }
+
     // MARK: Signing in
 
     /// Google's sign-in form, with a return trip to YouTube Music once it is
@@ -282,6 +344,21 @@ final class Engine: NSObject {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
+    /// Reads, and optionally changes, YouTube Music's account audio quality.
+    /// Pass nil to read without touching it.
+    func audioQuality(set want: String?) async throws -> AudioQualityResult {
+        struct Wrapper: Decodable { let result: AudioQualityResult }
+        return try await query("audioQuality", [want ?? ""], as: Wrapper.self).result
+    }
+
+    /// What the player is actually pulling down right now.
+    func streamQuality() async throws -> StreamQuality {
+        struct Wrapper: Decodable { let result: StreamQuality }
+        return try await query("streamQuality", [], as: Wrapper.self).result
+    }
+
+    func setVideoQuality(_ level: String) { run("setVideoQuality", [level]) }
+
     func enqueue(videoId: String, atEnd: Bool) async throws -> EnqueueResult {
         struct Wrapper: Decodable { let result: EnqueueResult }
         return try await query("enqueue", [videoId, atEnd], as: Wrapper.self).result
@@ -330,8 +407,12 @@ extension Engine: WKScriptMessageHandler {
             if let snap = try? JSONDecoder().decode(EngineSnapshot.self, from: data) {
                 snapshot = snap
                 if snap.ready { isBooting = false }
+                dumpSnapshot(data)
             }
-        case "search", "library", "playlist", "enqueue", "download", "lyrics":
+        case "queueChange":
+            logQueueChange(data)
+        case "search", "library", "playlist", "enqueue", "download", "lyrics",
+             "audioQuality", "streamQuality":
             if let id = envelope.requestId {
                 pending.removeValue(forKey: id)?(.success(data))
             }
@@ -360,6 +441,10 @@ extension Engine: WKNavigationDelegate {
         webView.evaluateJavaScript("window.__prism && window.__prism.ping()")
         // The injected stylesheet does not survive navigation.
         if videoMode { setVideoMode(true) }
+        // Neither does the bridge's video-quality preference — a fresh document
+        // starts on 'auto'. Whoever owns the setting re-states it here.
+        if queueLogURL != nil { run("setQueueTrace", [true]) }
+        onDocumentReady?()
     }
 }
 

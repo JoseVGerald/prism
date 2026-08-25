@@ -23,6 +23,51 @@ struct ContentPane: View {
     }
 }
 
+/// Switches a track between its song and its music video, the way YouTube
+/// Music's own Song/Video control does.
+///
+/// Distinct from `VideoToggle`, which only chooses what Prism draws for the
+/// track already loaded. This one changes which recording is playing.
+struct AVToggle: View {
+    @Bindable var model: AppModel
+
+    private var showingVideo: Bool { model.engine.snapshot.showingVideoSide }
+
+    /// Lets the selected pill travel between the two sides rather than fading
+    /// out of one and into the other, so the control reads as one moving part.
+    @Namespace private var pill
+
+    var body: some View {
+        HStack(spacing: 3) {
+            side("Song", selected: !showingVideo) { model.setAVMode(video: false) }
+            side("Video", selected: showingVideo) { model.setAVMode(video: true) }
+        }
+        .padding(3)
+        .glassEffect(.regular, in: .capsule)
+        .animation(.spring(response: 0.34, dampingFraction: 0.78), value: showingVideo)
+        .help("Switch between the song and the music video")
+    }
+
+    private func side(_ label: String, selected: Bool,
+                      _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(selected ? AnyShapeStyle(.primary)
+                                          : AnyShapeStyle(.secondary))
+                .padding(.horizontal, 13).padding(.vertical, 5)
+                .background {
+                    if selected {
+                        Capsule().fill(.white.opacity(0.22))
+                            .matchedGeometryEffect(id: "avPill", in: pill)
+                    }
+                }
+                .contentShape(Capsule())
+        }
+        .buttonStyle(PressableButtonStyle(pressedScale: 0.94))
+    }
+}
+
 /// Switches the Now Playing area between the music video and the cover art.
 struct VideoToggle: View {
     @Bindable var model: AppModel
@@ -34,8 +79,9 @@ struct VideoToggle: View {
                 .font(.caption.weight(.medium))
                 .padding(.horizontal, 13).padding(.vertical, 7)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle())
         .glassEffect(.regular.interactive(), in: .capsule)
+        .hoverBloom()
         .help(model.videoMode ? "Show the cover art" : "Play the music video")
     }
 }
@@ -49,8 +95,36 @@ private struct NowPlayingPane: View {
 
     private var snap: EngineSnapshot { model.engine.snapshot }
 
+    /// The equalizer is the most expensive thing Prism draws, and a window
+    /// nobody can see is the cheapest place to stop drawing it.
+    private var animatingBars: Bool { playing && model.windowVisible }
+
+    @State private var showingSettings = false
+
     var body: some View {
         VStack(spacing: 22) {
+            // Settings live here rather than on For You: this is the pane the
+            // ambient controls actually change, so the gear is next to its
+            // effect.
+            HStack {
+                Spacer()
+                Button { showingSettings = true } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressableButtonStyle())
+                .glassEffect(.regular.interactive(), in: .circle)
+                .hoverBloom()
+                .help("Settings")
+                .popover(isPresented: $showingSettings, arrowEdge: .bottom) {
+                    SettingsPanel(model: model)
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 14)
+
             Spacer(minLength: 0)
 
             // Lyrics take the whole middle: the point of the mode is to read
@@ -62,22 +136,39 @@ private struct NowPlayingPane: View {
                     .transition(.opacity)
             } else if !model.videoMode {
                 HStack(spacing: 18) {
-                    EqualizerView(palette: model.palette, isPlaying: playing,
-                                  seed: 0, maxBlocks: 6, block: 5, gap: 2.5)
-                        .frame(height: 240)
-                        .frame(maxWidth: .infinity)
+                    if model.ambient.showEqualizers {
+                        EqualizerView(palette: model.palette, isPlaying: animatingBars,
+                                      seed: 0, maxBlocks: 6, block: 5, gap: 2.5)
+                            .frame(height: 240)
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Spacer(minLength: 0)
+                    }
 
                     Artwork(url: track?.artworkURL, corner: 18)
                         .frame(width: 240, height: 240)
                         .shadow(color: .black.opacity(0.55), radius: 34, y: 16)
-                        .animation(.easeInOut(duration: 0.45), value: track?.videoId)
+                        // Keyed on the id so a new track genuinely swaps the
+                        // view: the old sleeve drops back and fades while the
+                        // new one rises into place, instead of one URL quietly
+                        // replacing another inside the same image.
+                        .id(track?.videoId)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .scale(scale: 0.92)),
+                            removal: .opacity.combined(with: .scale(scale: 1.04))))
+                        .animation(.spring(response: 0.5, dampingFraction: 0.82),
+                                   value: track?.videoId)
                         .onTapGesture { model.toggleCompact() }
                         .help("Click for compact mode")
 
-                    EqualizerView(palette: model.palette, isPlaying: playing,
-                                  seed: 137, maxBlocks: 6, block: 5, gap: 2.5)
-                        .frame(height: 240)
-                        .frame(maxWidth: .infinity)
+                    if model.ambient.showEqualizers {
+                        EqualizerView(palette: model.palette, isPlaying: animatingBars,
+                                      seed: 137, maxBlocks: 6, block: 5, gap: 2.5)
+                            .frame(height: 240)
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Spacer(minLength: 0)
+                    }
                 }
                 .padding(.horizontal, 18)
                 .transition(.opacity)
@@ -104,7 +195,10 @@ private struct NowPlayingPane: View {
                     .lineLimit(1)
                     .shadow(color: .black.opacity(model.videoMode ? 0.7 : 0), radius: 8)
                 HStack(spacing: 8) {
-                    if snap.hasVideo { VideoToggle(model: model) }
+                    // A paired track gets the Song/Video switcher; a video with
+                    // no song behind it only gets the cover-art toggle.
+                    if snap.hasCounterpart { AVToggle(model: model) }
+                    else if snap.hasVideo { VideoToggle(model: model) }
                     if track != nil { LyricsToggle(model: model) }
                 }
                 .padding(.top, 4)

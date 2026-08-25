@@ -57,46 +57,61 @@ final class Transitions {
     /// audibly worse than no crossfade. So it is off here, and says why, rather
     /// than running and sounding broken. `mute` does work, but mute is binary
     /// and a blend needs a ramp.
-    static var isSupported: Bool {
+    /// How a transition is performed here.
+    ///
+    /// The two are the same machinery — plan, shadow player, tempo ramp,
+    /// handover — differing only in what happens at the seam.
+    enum Mode {
+        /// Overlap the two tracks and ramp their gains against each other.
+        case blend
+        /// No overlap: bend the outgoing tempo to meet the incoming one, then
+        /// switch in a single step on the beat.
+        case cut
+    }
+
+    /// macOS can blend because its web player honours `volume`. iOS cannot —
+    /// see `modeNote` — so it cuts instead of pretending.
+    static var mode: Mode {
         #if canImport(AppKit)
-        return true
+        return .blend
         #else
-        return false
+        return .cut
         #endif
     }
 
-    /// Why crossfade is unavailable, for the UI to show instead of a slider.
-    /// Why crossfade is off, stated precisely enough to be useful.
-    ///
-    /// An earlier version of this said "iOS ignores volume changes from a web
-    /// player", which is true but too broad, and the broadness hid where the
-    /// real wall is. Measured on an iPhone 16 Pro, iOS 26:
-    ///
-    /// * `video.volume = 0.3` reads back 0.3 and is reverted to 1 within a
-    ///   second. YouTube's own `setVolume(30)` reports 30 forever while the
-    ///   element stays at 1 — a stored number it never applies.
-    /// * Web Audio itself works fine. An oscillator through a `GainNode` and
-    ///   an `AnalyserNode` measured peak 0.25 at gain 0.25 and scaled
-    ///   correctly, and a plain `<audio>` element playing a `data:` WAV
-    ///   through `createMediaElementSource` measured RMS 0.259 at gain 1.0 and
-    ///   0.072 at gain 0.2.
-    /// * The *same* graph fed by YouTube's element, with the player at state 1
-    ///   and `currentTime` advancing, measures **exactly zero**.
-    ///
-    /// The difference is MSE. YouTube plays through Media Source Extensions —
-    /// the element's `src` is a `blob:` — and MSE-backed media is decoded by
-    /// the platform pipeline, which iOS will not route into Web Audio. So the
-    /// blocker is not "no gain on iOS", it is "no gain over MSE media", and
-    /// Prism cannot supply the audio any other way: every audio format
-    /// YouTube offers is `signatureCipher`, with no plain URL.
-    static var unsupportedReason: String? {
-        isSupported ? nil
-            : "YouTube plays through Media Source Extensions, and iOS will not "
-            + "route that audio into Web Audio, where the volume control lives. "
-            + "The player's own volume setting is accepted and then ignored, so "
-            + "a crossfade would play both tracks at full volume instead of "
-            + "blending them."
+    /// Whether a managed transition of any kind is possible.
+    static var isSupported: Bool { true }
+
+    /// What this platform actually does between tracks, in one sentence for
+    /// the settings panel. Not an apology on iOS: a cut on the beat, with the
+    /// outgoing track's tempo led into it, is a real transition.
+    static var modeNote: String {
+        switch mode {
+        case .blend:
+            return "Tracks overlap and fade across each other."
+        case .cut:
+            return "The outgoing track's tempo is bent to meet the next one, "
+                 + "then the two are switched in a single step on the beat. "
+                 + "iOS will not let Prism fade a YouTube stream, so this is a "
+                 + "cut rather than a blend — the beats still line up."
+        }
     }
+
+    /// Why crossfade is unavailable, for the UI to show instead of a slider.
+    /// Kept for callers that want to explain a *missing* feature. Nothing is
+    /// missing now — iOS cuts instead of blending — so this is always nil and
+    /// `modeNote` is what the UI should show.
+    ///
+    /// The measurement behind the cut, kept because it is the reason:
+    /// `video.volume = 0.3` reads back 0.3 and is reverted to 1 within a
+    /// second; `setVolume(30)` reports 30 forever while the element stays at 1.
+    /// Web Audio is not a way round it either — an oscillator through a
+    /// `GainNode` measures peak 0.25 at gain 0.25 and a plain `<audio>` element
+    /// measures RMS 0.259 at gain 1.0 and 0.072 at gain 0.2, but YouTube's
+    /// element through the same graph, playing, measures exactly zero. Its
+    /// media is MSE-backed and iOS decodes that in the platform pipeline, which
+    /// it will not route into Web Audio.
+    static var unsupportedReason: String? { nil }
 
     /// Shortest blend Prism will perform. Anything under this is not a mix.
     static let minimumBlend: Double = AutoMix.minimumDuration
@@ -176,6 +191,14 @@ final class Transitions {
     /// True only during the swap, when the player legitimately stops for a
     /// moment. Outside it, a stopped player means the user pressed pause.
     private var handingOver = false
+    /// True from the instant a cut silences the main player until the handover
+    /// takes over. Without it the "paused mid-fade" guard below cancels the
+    /// transition it is halfway through: a cut *deliberately* stops the
+    /// outgoing track, and the platform stops it a second time when the shadow
+    /// starts, so the snapshot legitimately reports "not playing" at exactly
+    /// the moment the cut is working correctly. Measured — the lead-in ran its
+    /// full eight seconds and then died on its own switch.
+    private var cutting = false
     private var fadeTask: Task<Void, Never>?
     private var armTask: Task<Void, Never>?
     private var watchdog: Task<Void, Never>?
@@ -222,15 +245,40 @@ final class Transitions {
         // Nothing here can work without a working gain control. Bail before
         // arming a shadow player whose fade would be inaudible as a fade.
         guard Self.isSupported else { return }
+
+        // Repeat-one means the next thing to play is this track again, so there
+        // is nothing to cross into. Without this the transition armed the next
+        // *queue* entry and handed over to it, and the track advanced instead of
+        // repeating — the mode looked broken while it was in fact being
+        // overruled. Verified: with ONE set and six seconds left, playback moved
+        // to a different video and fade.log recorded a completed handover.
+        //
+        // Checked before the in-flight branch as well, so switching to ONE
+        // during a fade abandons it rather than letting it land.
+        if (snap.repeatMode ?? "NONE") == "ONE" {
+            // cancelFade rather than just clearing the arm: it also tears down a
+            // shadow that is already loaded and holding a second player.
+            cancelFade("repeat one — the track is not going anywhere")
+            return
+        }
+
         if fading {
             // The user skipped, or something else moved the player out from
             // under us. Left alone the ramp would keep pulling the main
             // player's volume down on a track that is not the one being faded,
             // and it would never reach the handover that puts it back.
             let id = snap.track?.videoId
-            if id != fadingFrom && id != armedFor {
+            // Not while a cut is in flight. A cut ends the outgoing track by
+            // design and then moves the main player onto the next one, so the
+            // track *is* expected to change — and YouTube often auto-advances
+            // at the same moment, landing on something that is neither the
+            // outgoing nor the armed id for a tick or two. Cancelling there
+            // threw away a handover that had already placed the cut correctly:
+            // measured, the switch itself was clean at 92ms and the alignment
+            // that follows it was abandoned a moment later.
+            if !cutting && !handingOver && id != fadingFrom && id != armedFor {
                 cancelFade("track changed under the fade")
-            } else if !handingOver && !snap.playback.isPlaying {
+            } else if !handingOver && !cutting && !snap.playback.isPlaying {
                 cancelFade("paused mid-fade")
             }
             return
@@ -367,23 +415,50 @@ final class Transitions {
                 for attempt in 0..<18 {
                     try? await Task.sleep(for: .milliseconds(700))
                     guard !Task.isCancelled, armedFor == videoId else { return }
-                    let state = await js("""
-                    (function(){
-                      var p = document.querySelector('#movie_player');
-                      if (!p || !p.getPlayerState) return 'none';
-                      try {
-                        p.mute(); p.setVolume(0); p.playVideo();
-                        return String(p.getPlayerState()) + ':' + String(p.getCurrentTime());
-                      } catch (e) { return 'err ' + e.message; }
-                    })()
-                    """) ?? "none"
+                    // A blend proves readiness by *playing* the shadow. A cut
+                    // must not: only one webview may have audio at a time, so
+                    // starting the shadow here silently paused the main player
+                    // mid-track — measured, it stopped dead at 228.8s of 252.2
+                    // and the transition then never fired, because a paused
+                    // track's remaining time never falls. Loading is enough to
+                    // prove the shadow is good; playing it is the cut itself.
+                    let probe = Self.mode == .cut
+                        ? """
+                        (function(){
+                          var p = document.querySelector('#movie_player');
+                          if (!p || !p.getPlayerState) return 'none';
+                          try {
+                            // Pause on every poll, not once at the end. The
+                            // shadow's page autoplays as soon as it loads, and
+                            // that alone takes the audio session away from the
+                            // main player — measured, the outgoing track went
+                            // silent at 228.3s during arming, long before any
+                            // cut. Muting is not enough; it has to be stopped.
+                            p.mute(); p.setVolume(0); p.pauseVideo();
+                            var d = p.getDuration ? p.getDuration() : 0;
+                            var f = p.getVideoLoadedFraction ? p.getVideoLoadedFraction() : 0;
+                            return (d > 0 && f > 0.01 ? 'ready' : 'wait') + ':' + d + ':' + f;
+                          } catch (e) { return 'err ' + e.message; }
+                        })()
+                        """
+                        : """
+                        (function(){
+                          var p = document.querySelector('#movie_player');
+                          if (!p || !p.getPlayerState) return 'none';
+                          try {
+                            p.mute(); p.setVolume(0); p.playVideo();
+                            return String(p.getPlayerState()) + ':' + String(p.getCurrentTime());
+                          } catch (e) { return 'err ' + e.message; }
+                        })()
+                        """
+                    let state = await js(probe) ?? "none"
 
                     // 1 = playing, 3 = buffering. Either means audio is flowing
                     // and the fade-in will be heard. 5 = cued but stalled,
                     // 2 = paused, 0/-1 = never started; an unplayable or
                     // region-blocked track sits in those forever, which the
                     // attempt cap catches.
-                    if state.hasPrefix("1") || state.hasPrefix("3") {
+                    if state.hasPrefix("ready") || state.hasPrefix("1") || state.hasPrefix("3") {
                         // Park it paused at the start. The rate for the mix is
                         // set later, while it is still paused here — which is
                         // the only moment a rate change costs nothing.
@@ -440,7 +515,10 @@ final class Transitions {
         fadeTask?.cancel()
         fadeTask = Task { [weak self] in
             guard let self else { return }
-            await runFade(seconds: fade, target: target, ramp: plan.tempoRamp)
+            switch Self.mode {
+            case .blend: await runFade(seconds: fade, target: target, ramp: plan.tempoRamp)
+            case .cut:   await runCut(leadIn: fade, target: target, ramp: plan.tempoRamp)
+            }
         }
     }
 
@@ -485,10 +563,13 @@ final class Transitions {
             let elapsed = Date().timeIntervalSince(began)
             let t = min(elapsed / fade, 1)
 
-            // Equal-power: the two songs are uncorrelated, so their *powers*
-            // add and this keeps the sum flat.
-            let out = cos(t * .pi / 2)
-            let into = sin(t * .pi / 2)
+            // Ducked equal-power. Plain equal-power parks both songs at -3 dB
+            // through the whole middle of the blend, so for several seconds
+            // neither is in front and the overlap reads as two records at once.
+            // This pulls the outgoing track down harder and derives the
+            // incoming gain from it, so the total power is still exactly 1 and
+            // the new track is simply in front sooner.
+            let (out, into) = BlendCurve.duckedPower.gains(at: t)
 
             engine.setVolume(target * out)
             fire("(function(){var p=document.querySelector('#movie_player'); if(p) p.setVolume(\(target * into));})()")
@@ -506,17 +587,100 @@ final class Transitions {
                              t, step.rate, out))
             }
 
-            if elapsed - lastTraced > 0.5 {
+            // The gain ramp must never wait on a diagnostic.
+            //
+            // This used to `await shadowClock()` right here, on the critical
+            // path, every half second — and a slow round trip into the shadow
+            // webview stalled the whole loop with it. Caught in a real blend:
+            // the fade sampled three times across eight seconds (t 0.00, 0.08,
+            // then 1.00) instead of every 40 ms, so the "ramp" was three steps
+            // and only the first of three tempo bends ever fired. Off the path
+            // entirely now, and skipped outright when nothing is logging.
+            if logHandle != nil, elapsed - lastTraced > 0.5 {
                 lastTraced = elapsed
-                let shadowNow = await shadowClock()
-                trace(String(format: "[FADE_MATH] t %.2f  out %.3f  in %.3f  shadow @ %.2f",
-                             t, out, into, shadowNow))
+                let (tNow, outNow, intoNow) = (t, out, into)
+                Task { [weak self] in
+                    guard let self else { return }
+                    let shadowNow = await shadowClock()
+                    trace(String(format: "[FADE_MATH] t %.2f  out %.3f  in %.3f  shadow @ %.2f",
+                                 tNow, outNow, intoNow, shadowNow))
+                }
             }
             if t >= 1 { break }
             try? await Task.sleep(for: .milliseconds(40))
         }
 
         if Task.isCancelled { return }
+        await handover(target: target, elapsedFade: Date().timeIntervalSince(began),
+                       shadowRate: ramp?.incomingRate ?? 1)
+    }
+
+    /// A transition for a platform that cannot fade.
+    ///
+    /// Same shape as `runFade` with the gain taken out, and one deliberate
+    /// difference in timing: the shadow is **not** started at the top. On iOS
+    /// only one webview may have audio at a time — measured, starting the
+    /// shadow paused the main player mid-track — so an early start would not
+    /// overlap, it would simply end the outgoing song early. Here that rule is
+    /// the mechanism rather than the obstacle: the shadow stays paused and
+    /// buffered through the lead-in, and the one `playVideo()` that starts it
+    /// *is* the cut.
+    ///
+    /// The lead-in is the part worth hearing. The plan's duration is spent
+    /// bending the outgoing track's tempo toward the incoming one, so the two
+    /// grooves converge before the switch instead of colliding at it. In a
+    /// blend those bends are placed late and hidden under the incoming track;
+    /// here nothing masks them, which is the point — the old song audibly
+    /// leans into the new one.
+    private func runCut(leadIn: Double, target: Double, ramp: TempoRamp?) async {
+        var pendingSteps = ramp?.outgoingSteps ?? []
+        let began = Date()
+        var lastTraced = -1.0
+
+        while true {
+            if Task.isCancelled { return }
+            let elapsed = Date().timeIntervalSince(began)
+            let t = min(elapsed / leadIn, 1)
+
+            if let step = pendingSteps.first, t >= step.at {
+                pendingSteps.removeFirst()
+                engine.setPlaybackRate(step.rate)
+                trace(String(format: "[CUT] lead-in bend at t %.2f → ×%.4f", t, step.rate))
+            }
+
+            if elapsed - lastTraced > 0.5 {
+                lastTraced = elapsed
+                trace(String(format: "[CUT] lead-in t %.2f", t))
+            }
+            if t >= 1 { break }
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+
+        if Task.isCancelled { return }
+
+        // The cut. Silence the main first: if the shadow is started first, the
+        // platform stops the main for us and the order of the two silences
+        // becomes the platform's decision rather than Prism's.
+        let cutAt = Date()
+        cutting = true
+        engine.mute()
+        fire("(function(){var p=document.querySelector('#movie_player'); if(p){p.unMute(); p.setVolume(100); p.playVideo();}})()")
+
+        // How long the shadow takes to make a sound is the size of the hole in
+        // the music, so it is measured rather than assumed.
+        var heard = -1.0
+        for _ in 0..<40 {
+            if Task.isCancelled { return }
+            if await shadowClock() > 0.05 {
+                heard = Date().timeIntervalSince(cutAt)
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        trace(heard >= 0
+              ? String(format: "[CUT] shadow audible %.0f ms after the cut", heard * 1000)
+              : "[CUT] shadow never started — the next track will load normally")
+
         await handover(target: target, elapsedFade: Date().timeIntervalSince(began),
                        shadowRate: ramp?.incomingRate ?? 1)
     }
@@ -564,6 +728,7 @@ final class Transitions {
         // that jumped a whole track, which is why a fade from "Good Morning"
         // landed on "Champion" instead of "Stronger".
         if engine.snapshot.track?.videoId != expected {
+            engine.noteQueueCause("crossfade handover")
             engine.next()
         } else {
             trace("[FADE_MATH] already advanced; not skipping")
@@ -690,13 +855,46 @@ final class Transitions {
         // Only now does the main player become audible, on the position the
         // shadow reached rather than on the track's opening.
         engine.unmute()
-        let blendSteps = 8
-        for step in 1...blendSteps {
-            if Task.isCancelled { return }
-            let a = Double(step) / Double(blendSteps)
-            engine.setVolume(target * a)
-            fire("(function(){var p=document.querySelector('#movie_player'); if(p) p.setVolume(\(target * (1 - a)));})()")
-            try? await Task.sleep(for: .milliseconds(18))
+        switch Self.mode {
+        case .blend:
+            // The join is kept short enough that the two copies cannot drift
+            // apart inside it.
+            //
+            // They are the same audio at the same position, but not at the same
+            // *speed*: the shadow is still running at the bend's `shadowRate`
+            // while the main player has been reset to 1.0. Overlapping them for
+            // a fixed 144 ms therefore pulled two identical signals apart by
+            // `|rate - 1| × 144 ms` — 8.6 ms at a 6% bend, 17 ms at 12% — and
+            // two copies of the same sound a few milliseconds apart is a comb
+            // filter. That is the small bump at the end of a mix.
+            //
+            // So the overlap is budgeted by drift rather than fixed: at most
+            // ~4 ms of separation, which is short enough to stay out of comb
+            // territory, and never longer than the 144 ms that hides alignment
+            // error nor shorter than 36 ms, which would be a cut.
+            let mismatch = max(abs(shadowRate - 1), 0.001)
+            let joinSeconds = min(0.144, max(0.036, 0.004 / mismatch))
+            let stepSeconds = 0.018
+            let blendSteps = max(2, Int((joinSeconds / stepSeconds).rounded()))
+            trace(String(format: "[FADE_MATH] join over %.0f ms in %d steps (rate ×%.4f)",
+                         joinSeconds * 1000, blendSteps, shadowRate))
+            for step in 1...blendSteps {
+                if Task.isCancelled { return }
+                let a = Double(step) / Double(blendSteps)
+                engine.setVolume(target * a)
+                fire("(function(){var p=document.querySelector('#movie_player'); if(p) p.setVolume(\(target * (1 - a)));})()")
+                try? await Task.sleep(for: .seconds(stepSeconds))
+            }
+        case .cut:
+            // No ramp to run — the gains are inert here. Both players are on
+            // the same track within the alignment band checked above, so
+            // handing back is a switch between two copies of the same audio at
+            // the same position. Silence the shadow explicitly rather than
+            // leaving it to the platform's one-player rule, so which of them is
+            // audible is never ambiguous.
+            engine.setVolume(target)
+            fire("(function(){var p=document.querySelector('#movie_player'); if(p){p.mute(); p.pauseVideo();}})()")
+            trace(String(format: "[CUT] handed back to the main player, drift %+.3f", drift))
         }
 
         trace(String(format: "[FADE_MATH] handover complete, residual drift %+.3f", drift))
@@ -710,6 +908,7 @@ final class Transitions {
     /// volume wherever it had got to — often near zero — with `fading` stuck
     /// true, so the app went quiet and crossfade never ran again.
     private func finish(restoreTo volume: Double?) {
+        cutting = false
         engine.unmute()
         if let volume { engine.setVolume(volume) }
         // Always hand the player back at its own tempo. A fade abandoned

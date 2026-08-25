@@ -164,27 +164,108 @@ struct Backdrop: View {
 
 // MARK: - Glass building blocks
 
+/// The current artwork palette, so any control can tint itself without every
+/// view in between having to pass it down.
+private struct ArtPaletteKey: EnvironmentKey {
+    static let defaultValue = ArtPalette.fallback
+}
+
+extension EnvironmentValues {
+    var artPalette: ArtPalette {
+        get { self[ArtPaletteKey.self] }
+        set { self[ArtPaletteKey.self] = newValue }
+    }
+}
+
+/// Lifts a control slightly and lights it in the artwork's accent while the
+/// pointer is over it — the transport's hover, made available to everything.
+struct HoverBloom: ViewModifier {
+    @Environment(\.artPalette) private var palette
+    var scale: CGFloat = 1.04
+    var radius: CGFloat = 14
+    var opacity: Double = 0.45
+
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .shadow(color: palette.accent.opacity(hovering ? opacity : 0),
+                    radius: hovering ? radius : 0)
+            .scaleEffect(hovering ? scale : 1)
+            .animation(.spring(response: 0.42, dampingFraction: 0.85), value: hovering)
+            .onHover { hovering = $0 }
+    }
+}
+
+extension View {
+    func hoverBloom(scale: CGFloat = 1.04, radius: CGFloat = 14,
+                    opacity: Double = 0.45) -> some View {
+        modifier(HoverBloom(scale: scale, radius: radius, opacity: opacity))
+    }
+}
+
 /// A circular glass control. `prominent` is used for the play button.
+/// Squashes on press and springs back.
+///
+/// Hover already scaled these up, but hover is not feedback — it says the
+/// pointer is here, not that the click landed. On a transport where several
+/// buttons do near-identical things, the press is the part worth feeling.
+struct PressableButtonStyle: ButtonStyle {
+    var pressedScale: CGFloat = 0.86
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? pressedScale : 1)
+            .animation(.spring(response: 0.22, dampingFraction: 0.55),
+                       value: configuration.isPressed)
+    }
+}
+
+/// What a button does with its icon when it fires.
+///
+/// The motion says which button you hit without reading it: skip throws the
+/// glyph the way playback is about to move, shuffle turns over, and everything
+/// else takes a bounce.
+enum IconKick {
+    case none
+    case bounce
+    case spin
+    case nudge(CGFloat)
+}
+
 struct GlassIconButton: View {
     let system: String
     var size: CGFloat = 15
     var diameter: CGFloat = 34
     var prominent = false
     var active = false
+    var kick: IconKick = .bounce
+    /// Tints the hover bloom. Nil takes the palette from the environment.
+    var palette: ArtPalette? = nil
     let action: () -> Void
 
+    @Environment(\.artPalette) private var envPalette
     @State private var hovering = false
+    @State private var taps = 0
+    @State private var nudge: CGFloat = 0
+    @State private var spin: Double = 0
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            fire()
+            action()
+        } label: {
             Image(systemName: system)
                 .font(.system(size: size, weight: prominent ? .semibold : .medium))
                 .foregroundStyle(prominent ? AnyShapeStyle(.black)
                                            : AnyShapeStyle(active ? Color.accentColor : .primary))
+                .offset(x: nudge)
+                .rotationEffect(.degrees(spin))
                 .frame(width: diameter, height: diameter)
                 .contentTransition(.symbolEffect(.replace))
+                .symbolEffect(.bounce, options: .speed(1.6), value: bounceCount)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle())
         .background {
             if prominent {
                 Circle().fill(.white)
@@ -198,9 +279,40 @@ struct GlassIconButton: View {
                 Circle().strokeBorder(Color.accentColor.opacity(0.55), lineWidth: 1)
             }
         }
+        // A bloom in the artwork's own accent, so the transport is lit by the
+        // same colour as the rim rather than by a generic highlight.
+        .shadow(color: (palette ?? envPalette).accent.opacity(hovering ? 0.5 : 0),
+                radius: hovering ? 18 : 0)
         .scaleEffect(hovering ? 1.07 : 1.0)
-        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: hovering)
+        // Slower and softer than the old 0.25/0.7. The press spring stays snappy
+        // — that one is feedback, this one is just the pointer arriving.
+        .animation(.spring(response: 0.42, dampingFraction: 0.85), value: hovering)
         .onHover { hovering = $0 }
+    }
+
+    /// Only the bounce kick drives the symbol effect; the others move the glyph
+    /// themselves and a bounce on top of that reads as a wobble.
+    private var bounceCount: Int {
+        if case .bounce = kick { return taps }
+        return 0
+    }
+
+    private func fire() {
+        taps += 1
+        switch kick {
+        case .none, .bounce:
+            break
+        case .spin:
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.6)) { spin += 180 }
+        case .nudge(let dx):
+            // Out and back, rather than a single spring to zero: the return is
+            // what makes it read as a throw instead of a drift.
+            withAnimation(.spring(response: 0.15, dampingFraction: 0.5)) { nudge = dx }
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(130))
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.6)) { nudge = 0 }
+            }
+        }
     }
 }
 

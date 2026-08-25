@@ -163,7 +163,8 @@ public enum AutoMix {
         }
 
         var notes: [String] = []
-        let match = Tempo.match(from: bpmA, to: bpmB)
+        let match = Tempo.match(from: bpmA, to: bpmB,
+                                maxPercent: TempoRampPlanner.maxIncomingPercent)
         notes.append(String(format: "%.1f → %.1f BPM, rate %.3f%@",
                             bpmA, bpmB, match.rate,
                             match.foldedOctave ? " (half/double time)" : ""))

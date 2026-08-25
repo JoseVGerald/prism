@@ -770,7 +770,7 @@ struct IOSTransitionsSheet: View {
                 .font(.title3.weight(.semibold))
                 .padding(.top, 18)
 
-            if let reason = Transitions.unsupportedReason {
+            if let reason = Transitions.unsupportedReason, !reason.isEmpty {
                 HStack(alignment: .top, spacing: 11) {
                     Image(systemName: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
@@ -810,6 +810,10 @@ struct IOSTransitionsSheet: View {
                     Toggle("AutoMix", isOn: Binding(get: { model.transitions.autoMix },
                                                     set: { model.transitions.autoMix = $0 }))
                         .font(.callout)
+                    Text(Transitions.modeNote)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 4)
                 }
                 .padding(14)
                 .frame(maxWidth: .infinity)

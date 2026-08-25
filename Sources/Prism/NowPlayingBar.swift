@@ -54,16 +54,19 @@ struct NowPlayingBar: View {
         VStack(spacing: 5) {
                 HStack(spacing: 10) {
                     GlassIconButton(system: "shuffle", size: 13, diameter: 30,
-                                    active: snap.shuffled ?? false) { engine.shuffleQueue() }
-                        .help("Shuffle")
-                    GlassIconButton(system: "backward.fill", size: 13, diameter: 32) {
+                                    active: snap.shuffled ?? false,
+                                    kick: .spin, palette: model.palette) { model.shuffleQueue() }
+                        .help("Shuffle what is coming up")
+                    GlassIconButton(system: "backward.fill", size: 13, diameter: 32,
+                                    kick: .nudge(-5), palette: model.palette) {
                         engine.previous()
                     }
                     GlassIconButton(system: snap.playback.isPlaying ? "pause.fill" : "play.fill",
-                                    size: 17, diameter: 44, prominent: true) {
+                                    size: 17, diameter: 44, prominent: true, palette: model.palette) {
                         engine.togglePlayPause()
                     }
-                    GlassIconButton(system: "forward.fill", size: 13, diameter: 32) {
+                    GlassIconButton(system: "forward.fill", size: 13, diameter: 32,
+                                    kick: .nudge(5), palette: model.palette) {
                         engine.next()
                     }
                     GlassIconButton(system: repeatIcon, size: 13, diameter: 30,

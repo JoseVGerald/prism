@@ -16,33 +16,97 @@ final class NotchController {
 
     private var panel: FloatingPanel?
     private let model: AppModel
-    private var screenObserver: NSObjectProtocol?
+    private var observers: [NSObjectProtocol] = []
+    /// Set only by `close()`. Distinguishes "the user put it away" from "it went
+    /// missing", so re-asserting visibility cannot resurrect a deliberate close.
+    private var dismissed = false
 
     init(model: AppModel) {
         self.model = model
-        screenObserver = NotificationCenter.default.addObserver(
+
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { _ in
-                MainActor.assumeIsolated { self.reposition() }
-            }
+                MainActor.assumeIsolated { self.screensChanged() }
+            })
+
+        // The island is a panel with no owner on screen: nothing re-shows it if
+        // it ever goes away, and once hidden it stayed hidden for the rest of
+        // the session. Measured — a freshly launched island was on Chrome's
+        // fullscreen space for 75 of 75 samples, while the same build after a
+        // few hours was on it for 0 of 60, and by then *no* Prism window was on
+        // any space at all. The panel's level and collection behaviour were
+        // never the problem; staying ordered-in was.
+        //
+        // A display sleeping or being unplugged is enough to do it: the notched
+        // screen momentarily disappears, `reposition` orders the panel out, and
+        // if no further screen notification arrives it never comes back.
+        //
+        // So the island re-asserts itself whenever the desktop changes around
+        // it. All three are rare and the work is a visibility check.
+        for name in [NSWorkspace.activeSpaceDidChangeNotification,
+                     NSWorkspace.didWakeNotification] {
+            observers.append(NSWorkspace.shared.notificationCenter.addObserver(
+                forName: name, object: nil, queue: .main) { _ in
+                    MainActor.assumeIsolated { self.ensureVisible() }
+                })
+        }
+        observers.append(center.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { self.ensureVisible() }
+            })
+    }
+
+    /// Puts the island back if anything took it away.
+    private func ensureVisible() {
+        guard !dismissed, Self.notchedScreen != nil else { return }
+        if panel == nil { open(); return }
+        if panel?.isVisible != true { reposition() }
+    }
+
+    /// The display with the physical notch, whichever one that is.
+    ///
+    /// Not `NSScreen.main` — that is the screen holding the key window, so the
+    /// moment Prism's window was dragged to an external monitor the island
+    /// vanished: `available` went false and `open()` bailed. The notch is a
+    /// property of the hardware, not of where the window happens to be, so the
+    /// island stays in it and keeps working while you use the app elsewhere.
+    static var notchedScreen: NSScreen? {
+        NSScreen.screens.first { notchSize($0) != nil }
     }
 
     /// True on Macs that actually have a notch. Elsewhere the island would be a
     /// floating bar stuck under the menu bar, which is not what was asked for.
-    static var available: Bool { notchSize(NSScreen.main) != nil }
+    static var available: Bool { notchedScreen != nil }
 
     var isOpen: Bool { panel?.isVisible ?? false }
+
+    /// A display was added, removed or rearranged.
+    ///
+    /// `open()` is retried rather than only repositioning, because a session
+    /// that started clamshelled built no panel at all — and without this the
+    /// island would then stay missing until the app was restarted, even once
+    /// the lid was open again.
+    private func screensChanged() {
+        guard !dismissed else { return }
+        if panel == nil { open() } else { reposition() }
+    }
 
     func toggle() { isOpen ? close() : open() }
 
     func open() {
-        guard let screen = NSScreen.main, let notch = Self.notchSize(screen) else { return }
+        dismissed = false
+        guard let screen = Self.notchedScreen, let notch = Self.notchSize(screen) else { return }
         if panel != nil { reposition(); panel?.orderFrontRegardless(); return }
 
         let size = NSSize(width: NotchIslandView.width, height: NotchIslandView.height)
         // Above the menu bar, or the island would slide underneath it.
+        // Outlives Cmd-H: the notch is a place on the hardware, not a window of
+        // Prism's that should vanish because the app was hidden.
         let p = FloatingPanel(size: size, level: .init(Int(CGWindowLevelForKey(.mainMenuWindow)) + 3),
-                              movable: false)
+                              movable: false, hidesWithApp: false)
         p.contentView = NSHostingView(
             rootView: NotchIslandView(model: model, notch: notch))
         panel = p
@@ -51,18 +115,26 @@ final class NotchController {
     }
 
     func close() {
+        dismissed = true
         panel?.orderOut(nil)
         panel = nil
     }
 
     private func reposition() {
-        guard let panel, let screen = NSScreen.main else { return }
+        guard let panel else { return }
+        // Clamshell, or the lid display otherwise gone: there is no notch to sit
+        // in, so hide rather than park the island at the top of a monitor that
+        // has none. It comes back when the display does.
+        guard let screen = Self.notchedScreen else { panel.orderOut(nil); return }
         let f = screen.frame
         panel.setFrame(NSRect(x: f.midX - NotchIslandView.width / 2,
                               y: f.maxY - NotchIslandView.height,
                               width: NotchIslandView.width,
                               height: NotchIslandView.height),
                        display: true)
+        // Paired with the hide above, so reconnecting the lid display brings the
+        // island back without the user having to restart the app.
+        if !panel.isVisible { panel.orderFrontRegardless() }
     }
 
     /// Width and height of the physical notch, or nil if this screen has none.
@@ -77,6 +149,58 @@ final class NotchController {
     }
 }
 
+/// The island's own transport button.
+///
+/// Not `GlassIconButton`: there is no glass in the notch — the panel sits on
+/// the black of the bezel — but the motion should be the same as the main
+/// window's, so the kick behaviour is shared and only the chrome differs.
+private struct NotchControl: View {
+    let name: String
+    var active = false
+    let size: CGFloat
+    var kick: IconKick = .bounce
+    let action: () -> Void
+
+    @State private var taps = 0
+    @State private var nudge: CGFloat = 0
+    @State private var spin: Double = 0
+
+    var body: some View {
+        Button {
+            taps += 1
+            switch kick {
+            case .none, .bounce:
+                break
+            case .spin:
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.6)) { spin += 180 }
+            case .nudge(let dx):
+                withAnimation(.spring(response: 0.15, dampingFraction: 0.5)) { nudge = dx }
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(130))
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.6)) { nudge = 0 }
+                }
+            }
+            action()
+        } label: {
+            Image(systemName: name)
+                .font(.system(size: size, weight: .semibold))
+                .foregroundStyle(active ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.white))
+                .offset(x: nudge)
+                .rotationEffect(.degrees(spin))
+                .frame(width: 26, height: 24)
+                .contentTransition(.symbolEffect(.replace))
+                .symbolEffect(.bounce, options: .speed(1.6), value: bounceCount)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableButtonStyle())
+    }
+
+    private var bounceCount: Int {
+        if case .bounce = kick { return taps }
+        return 0
+    }
+}
+
 struct NotchIslandView: View {
     static let width: CGFloat = 420
     static let height: CGFloat = 300
@@ -86,6 +210,7 @@ struct NotchIslandView: View {
 
     @State private var expanded = false
     @State private var hoverTask: Task<Void, Never>?
+    @State private var pop = false
 
     private var snap: EngineSnapshot { model.engine.snapshot }
     /// Only alive when there is a track. With nothing loaded the notch behaves
@@ -101,6 +226,13 @@ struct NotchIslandView: View {
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: expanded)
         .animation(.easeInOut(duration: 0.2), value: live)
         .preferredColorScheme(.dark)
+        .onChange(of: snap.track?.videoId) { _, _ in
+            pop = true
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(230))
+                pop = false
+            }
+        }
     }
 
     // MARK: Collapsed — art chip left of the notch, waves right
@@ -112,6 +244,11 @@ struct NotchIslandView: View {
                 if live {
                     Artwork(url: snap.track?.artworkURL, corner: 3)
                         .frame(width: notch.height - 9, height: notch.height - 9)
+                        // The collapsed chip is a few millimetres of artwork, so
+                        // a track change is otherwise silent to look at. A short
+                        // pop is the whole notification.
+                        .scaleEffect(pop ? 1.16 : 1)
+                        .animation(.spring(response: 0.3, dampingFraction: 0.45), value: pop)
                         .padding(.trailing, 5)
                 } else {
                     Color.clear.frame(width: 1)
@@ -123,7 +260,7 @@ struct NotchIslandView: View {
                 if live {
                     EqualizerView(palette: model.palette,
                                   isPlaying: snap.playback.isPlaying,
-                                  seed: 3, maxBlocks: 3, block: 2, gap: 2)
+                                  seed: 3, maxBlocks: 3, block: 2, gap: 2, fps: 10)
                         .frame(width: 26, height: notch.height - 8)
                         .padding(.leading, 5)
                 } else {
@@ -167,7 +304,7 @@ struct NotchIslandView: View {
 
             HStack(spacing: 14) {
                 EqualizerView(palette: model.palette, isPlaying: snap.playback.isPlaying,
-                              seed: 0, maxBlocks: 5, block: 4, gap: 3)
+                              seed: 0, maxBlocks: 5, block: 4, gap: 3, fps: 12)
                     .frame(width: 96, height: 92)
 
                 Artwork(url: snap.track?.artworkURL, corner: 12)
@@ -175,19 +312,19 @@ struct NotchIslandView: View {
                     .shadow(color: .black.opacity(0.5), radius: 10, y: 3)
 
                 EqualizerView(palette: model.palette, isPlaying: snap.playback.isPlaying,
-                              seed: 7, maxBlocks: 5, block: 4, gap: 3)
+                              seed: 7, maxBlocks: 5, block: 4, gap: 3, fps: 12)
                     .frame(width: 96, height: 92)
             }
 
             HStack(spacing: 22) {
-                control("shuffle", active: snap.shuffled ?? false, size: 12) {
+                control("shuffle", active: snap.shuffled ?? false, size: 12, kick: .spin) {
                     model.shuffleQueue()
                 }
-                control("backward.fill", size: 15) { model.engine.previous() }
+                control("backward.fill", size: 15, kick: .nudge(-4)) { model.engine.previous() }
                 control(snap.playback.isPlaying ? "pause.fill" : "play.fill", size: 18) {
                     model.engine.togglePlayPause()
                 }
-                control("forward.fill", size: 15) { model.engine.next() }
+                control("forward.fill", size: 15, kick: .nudge(4)) { model.engine.next() }
                 control(repeatIcon, active: (snap.repeatMode ?? "NONE") != "NONE", size: 12) {
                     model.engine.cycleRepeat()
                 }
@@ -264,14 +401,8 @@ struct NotchIslandView: View {
     }
 
     private func control(_ name: String, active: Bool = false, size: CGFloat,
+                         kick: IconKick = .bounce,
                          _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: name)
-                .font(.system(size: size, weight: .semibold))
-                .foregroundStyle(active ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.white))
-                .frame(width: 26, height: 24)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
+        NotchControl(name: name, active: active, size: size, kick: kick, action: action)
     }
 }

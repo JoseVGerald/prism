@@ -14,13 +14,17 @@ struct EqualizerView: View {
     var maxBlocks: Int = 8
     var block: CGFloat = 7
     var gap: CGFloat = 3
+    /// Frames per second. Every frame costs a full layout and vibrancy pass of
+    /// whatever view hosts it, so the menu-bar chip — three columns, 26pt wide —
+    /// is not worth the same rate as the pair either side of the cover art.
+    var fps: Double = 20
 
     var body: some View {
         // One Canvas, no SwiftUI blur. Blurred glow layers meant an offscreen
         // gaussian every frame for each of two equalizers, which sat at ~30%
         // CPU forever. The halo below is painted instead, for the same look at
         // a fraction of the cost. Paused freezes the timeline entirely.
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: !isPlaying)) { tl in
+        TimelineView(.animation(minimumInterval: 1.0 / fps, paused: !isPlaying)) { tl in
             blocks(tl.date.timeIntervalSinceReferenceDate)
         }
         .allowsHitTesting(false)
@@ -60,16 +64,43 @@ struct EqualizerView: View {
             // one Path — turning thousands of fill calls per frame into a few
             // dozen.
             func pass(pad: CGFloat, tint: (Double) -> GraphicsContext.Shading) {
+                // Every block in a pass is the same rounded square, so its
+                // corners are tessellated once and then stamped into place.
+                //
+                // Building it per block was the app's single largest cost: at
+                // roughly fifty columns, thirteen rows, three passes and twenty
+                // frames a second, across two equalizers, `addRoundedRect` was
+                // computing on the order of eighty thousand corner sets per
+                // second. Profiling a playing app put nearly every Prism frame
+                // inside this function.
+                let side = block + pad * 2
+                let radius = side * 0.3
+
+                // A pass whose blocks are wider than the column pitch already
+                // overlaps its neighbours, so a run of them paints exactly the
+                // same shape as one rounded rect spanning the run. The halo is
+                // 11pt wide on a 7.5pt pitch, so this is most of its geometry
+                // gone for no visible change. Passes that do not overlap — the
+                // rim and the block itself — keep their gaps and are drawn one
+                // by one.
+                let mergeRuns = side >= pitch
+
                 for r in -peak...peak {
                     let y = cy + CGFloat(r) * pitch - block / 2
                     var path = Path()
-                    let radius = (block + pad * 2) * 0.3
-                    for c in 0..<columns where heights[c] >= abs(r) {
+                    var c = 0
+                    while c < columns {
+                        guard heights[c] >= abs(r) else { c += 1; continue }
+                        var end = c
+                        if mergeRuns {
+                            while end + 1 < columns && heights[end + 1] >= abs(r) { end += 1 }
+                        }
                         let x = x0 + CGFloat(c) * pitch
                         path.addRoundedRect(
                             in: CGRect(x: x - pad, y: y - pad,
-                                       width: block + pad * 2, height: block + pad * 2),
+                                       width: CGFloat(end - c) * pitch + side, height: side),
                             cornerSize: CGSize(width: radius, height: radius))
+                        c = end + 1
                     }
                     if path.isEmpty { continue }
                     ctx.fill(path, with: tint(Double((y - spanTop) / spanH)))

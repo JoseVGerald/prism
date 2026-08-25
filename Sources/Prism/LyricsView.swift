@@ -12,6 +12,7 @@ struct LyricsToggle: View {
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: .capsule)
+        .hoverBloom()
         .help(model.lyricsMode ? "Back to the artwork" : "Show lyrics")
     }
 }

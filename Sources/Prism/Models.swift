@@ -37,6 +37,9 @@ struct QueueEntry: Codable, Identifiable, Hashable {
     var selected: Bool
     var videoType: String?
     var explicit: Bool?
+    /// The other half of this track's Song/Video pair, if YouTube ships one.
+    var counterpartId: String?
+    var counterpartType: String?
 
     // The queue can legitimately contain the same video twice, so the index has
     // to be part of the identity or SwiftUI collapses the duplicates.
@@ -54,8 +57,10 @@ struct EngineSnapshot: Codable {
     var muted: Bool
     var repeatMode: String?
     var shuffled: Bool?
-    /// MUSIC_VIDEO_TYPE_* for the current track.
+    /// MUSIC_VIDEO_TYPE_* for whichever side is actually playing.
     var videoType: String?
+    /// The id of the other side of the Song/Video pair, when there is one.
+    var counterpartId: String?
     /// Whether the page is currently styled for fullscreen video.
     var videoMode: Bool?
     /// Where the video actually paints inside the page, in CSS pixels.
@@ -74,6 +79,14 @@ struct EngineSnapshot: Codable {
         guard let t = videoType else { return false }
         return t != "MUSIC_VIDEO_TYPE_ATV"
     }
+
+    /// True when the track exists as both a song and a music video, so the two
+    /// can be switched between. Independent of `hasVideo`: a song played from
+    /// an album is ATV — no picture of its own — and still pairs with a video.
+    var hasCounterpart: Bool { counterpartId != nil }
+
+    /// Whether the picture, rather than the audio-only version, is on screen.
+    var showingVideoSide: Bool { hasVideo }
 }
 
 // MARK: - Search / browse results
@@ -153,6 +166,54 @@ struct DownloadResult: Codable {
     var supported: Bool
     var ok: Bool
     var reason: String
+}
+
+/// One recorded queue change, and who caused it. Debug only — see the queue
+/// tracing block in `Bridge.swift`.
+struct QueueTrace: Codable {
+    var cause: String
+    var shape: String
+    var index: String?
+    var playing: String?
+    var added: [String]?
+    var removed: [String]?
+    var head: [String]?
+}
+
+struct QueueTraceEnvelope: Codable {
+    var trace: QueueTrace?
+}
+
+/// Result of reading or setting YouTube Music's account audio quality.
+struct AudioQualityResult: Codable {
+    var ok: Bool
+    /// "Low", "Normal" or "High", or nil when the setting could not be read.
+    var current: String?
+    var changed: Bool?
+    var reason: String?
+}
+
+/// What the player is actually pulling down, as opposed to what was asked for.
+struct StreamQuality: Codable {
+    var audioItag: Int?
+    var videoItag: Int?
+    var audioCodec: String?
+    /// Average bits per second of the audio stream in flight.
+    var audioBitrate: Int?
+    /// The best the manifest offers, so "you are not on the top tier" is a fact
+    /// rather than a guess.
+    var bestAudioBitrate: Int?
+    var resolution: String?
+    var videoQuality: String?
+
+    var audioKbps: Int? { audioBitrate.map { $0 / 1000 } }
+    var bestAudioKbps: Int? { bestAudioBitrate.map { $0 / 1000 } }
+
+    /// Reads "640x360@24 / 640x360@24" down to "640x360".
+    var shortResolution: String? {
+        resolution?.split(separator: "/").first?
+            .split(separator: "@").first.map { String($0).trimmingCharacters(in: .whitespaces) }
+    }
 }
 
 /// Contents of one opened playlist / album.

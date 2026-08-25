@@ -79,6 +79,61 @@ enum PlatformOpener {
     }
 }
 
+#if canImport(AppKit)
+/// Reports whether the window this sits in is actually on screen.
+///
+/// `NSApplication.occlusionState` cannot answer this for Prism: the notch
+/// island is a panel of its own and is always visible, so the app is always
+/// "visible" no matter what the main window is doing. The question has to be
+/// asked of the window.
+///
+/// It exists for the equalizer, which is a 20fps canvas and the most expensive
+/// thing Prism draws. With the window buried behind a browser it was still
+/// painting every frame, at full cost, for nobody.
+struct WindowVisibility: NSViewRepresentable {
+    let onChange: (Bool) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = ProbeView()
+        view.onChange = onChange
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        (view as? ProbeView)?.onChange = onChange
+    }
+
+    final class ProbeView: NSView {
+        var onChange: ((Bool) -> Void)?
+        private var observer: NSObjectProtocol?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            guard let window else { onChange?(false); return }
+            report()
+            observer = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification,
+                object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.report() }
+                }
+        }
+
+        private func report() {
+            // Miniaturised windows do not always clear the occlusion bit, so
+            // both are checked.
+            let visible = (window?.occlusionState.contains(.visible) ?? false)
+                && !(window?.isMiniaturized ?? false)
+            onChange?(visible)
+        }
+
+        // No deinit teardown: the observer is dropped when the view is, and
+        // reaching a non-Sendable token from a nonisolated deinit does not
+        // compile. Re-registration already removes the previous one.
+    }
+}
+#endif
+
 /// Embeds the engine's webview in SwiftUI.
 ///
 /// `WKWebView` is the same class on both platforms and every command Prism

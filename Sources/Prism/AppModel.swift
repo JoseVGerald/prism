@@ -1,5 +1,8 @@
 import SwiftUI
 import Observation
+#if canImport(AppKit)
+import CoreGraphics
+#endif
 
 enum Route: Hashable {
     case forYou
@@ -29,8 +32,23 @@ final class AppModel {
     /// rather than on every snapshot.
     private var lastAnnounced: String?
 
-    var route: Route = .nowPlaying
+    var route: Route = .nowPlaying {
+        didSet {
+            // Leaving the detail pages by any route other than Back — a sidebar
+            // click, the wordmark, a queue jump — ends that trail. Without this
+            // the stack survived, and the *next* detail page opened inherited
+            // it: search, open an artist, open one of its albums, click Search
+            // in the sidebar, search again, open an artist, press Back — and
+            // Back walked into the album from the previous journey instead of
+            // returning to the search results. It looked like Back was broken
+            // when it was faithfully unwinding a trail that should not still
+            // have existed.
+            if case .detail = route {} else { detailStack.removeAll() }
+        }
+    }
     var showQueue = true
+    /// Raised by the Settings menu; the root view presents the panel.
+    var showSettings = false
 
     /// Where the current detail page was opened from, and the trail of detail
     /// pages behind it — an artist leads to an album, which should come back to
@@ -68,6 +86,15 @@ final class AppModel {
 
     private var nowPlaying: NowPlaying?
     let transitions: Transitions
+    let quality: QualitySettings
+    let ambient = AmbientSettings()
+
+    #if canImport(AppKit)
+    /// The full-screen ambient surface. macOS only: it is a window, and iOS
+    /// has nothing for it to cover.
+    private var ambientPanel: AmbientPanelController!
+    private var idleTimer: Task<Void, Never>?
+    #endif
 
     /// The notch island. Not a toggle — it is simply on for the whole session
     /// on a Mac that has a notch, and shows nothing at all when no track is
@@ -98,11 +125,15 @@ final class AppModel {
 
     init() {
         transitions = Transitions(engine: engine)
+        quality = QualitySettings(engine: engine)
         nowPlaying = NowPlaying(engine: engine)
+        engine.onDocumentReady = { [quality] in quality.applyToEngine() }
         #if canImport(AppKit)
         notch = NotchController(model: self)
         notch.open()
         probe.startIfEnabled()
+        ambientPanel = AmbientPanelController(model: self)
+        startIdleWatch()
         #endif
         if !UserDefaults.standard.bool(forKey: Self.seenKey) {
             route = .forYou
@@ -289,6 +320,11 @@ final class AppModel {
     var palette: ArtPalette = .fallback
     var controlsVisible = true
 
+    /// Whether the main window is on screen. False when it is buried behind
+    /// another app or miniaturised, which is when the equalizer should stop
+    /// animating — see WindowVisibility.
+    var windowVisible = true
+
     private var searchTask: Task<Void, Never>?
     private var paletteTask: Task<Void, Never>?
     private var hideControlsTask: Task<Void, Never>?
@@ -302,6 +338,38 @@ final class AppModel {
     /// Window bounds, reported by the root view; the placement maths needs them.
     var windowSize: CGSize = .zero
     private var videoFillTask: Task<Void, Never>?
+    private var videoSwitchTask: Task<Void, Never>?
+
+    /// Switches a paired track between its song and its music video.
+    ///
+    /// Switching to the video also turns video mode on, because the alternative
+    /// is playing a music video behind a static cover — which is what asking
+    /// for the video plainly does not mean. Switching back turns it off.
+    ///
+    /// The page needs a moment to load the other side before the fill can be
+    /// measured, and `syncVideoMode` would otherwise see the old ATV type and
+    /// pull us straight back out, so the mode is set after the switch lands.
+    func setAVMode(video: Bool) {
+        guard engine.snapshot.hasCounterpart else { return }
+        engine.setAVMode(video: video)
+        flash(video ? "Switching to the music video" : "Switching to the song")
+
+        videoSwitchTask?.cancel()
+        videoSwitchTask = Task {
+            for _ in 0..<40 {
+                try? await Task.sleep(for: .milliseconds(250))
+                if Task.isCancelled { return }
+                guard engine.snapshot.hasVideo == video else { continue }
+                if video {
+                    guard !videoMode else { return }
+                    toggleVideoMode()
+                } else if videoMode {
+                    toggleVideoMode()
+                }
+                return
+            }
+        }
+    }
 
     func toggleVideoMode() {
         videoMode.toggle()
@@ -310,11 +378,15 @@ final class AppModel {
         flash(videoMode ? "Showing music video" : "Showing cover art")
 
         guard videoMode else {
-            videoFillTask?.cancel()
-            videoPlacement = nil
+            clearVideoFill()
             return
         }
         measureVideoFill()
+    }
+
+    private func clearVideoFill() {
+        videoFillTask?.cancel()
+        videoPlacement = nil
     }
 
     /// Places the webview so the video covers the window, by measuring what it
@@ -412,6 +484,10 @@ final class AppModel {
         guard videoMode, !hasVideo else { return }
         videoMode = false
         engine.setVideoMode(false)
+        // The webview is still sized and offset to cover the window at this
+        // point. Leaving that behind parks an enlarged, displaced page under
+        // the glass for the rest of the session.
+        clearVideoFill()
     }
 
     func toggleCompact() {
@@ -674,6 +750,62 @@ final class AppModel {
         engine.undoQueue()
         flash("Undid \(label)")
     }
+
+    // MARK: Ambient
+
+    /// Seconds per beat for the track playing, or nil when nobody knows.
+    ///
+    /// The tempo comes from the same lookup AutoMix uses, so the pulse costs
+    /// one cache read and no new analysis. Deezer answers `bpm: 0` for a great
+    /// many tracks, which is why this is so often nil and the light falls back
+    /// to breathing rather than inventing a tempo.
+    var beatPeriod: Double? {
+        guard ambient.motion == .beat,
+              let id = engine.snapshot.track?.videoId,
+              let bpm = transitions.analysis.cached(id)?.bpm, bpm > 30
+        else { return nil }
+        return 60 / bpm
+    }
+
+    /// Asks for the tempo of whatever is playing, so beat motion has something
+    /// to work with without waiting for a crossfade to arm.
+    func prefetchTempoIfNeeded() {
+        guard ambient.motion == .beat, let t = engine.snapshot.track else { return }
+        transitions.analysis.prefetch(videoId: t.videoId, title: t.title,
+                                      artist: t.artist,
+                                      duration: engine.snapshot.duration)
+    }
+
+    #if canImport(AppKit)
+    func toggleAmbient() { ambientPanel.toggle() }
+    func dismissAmbient() { ambientPanel.dismiss() }
+
+    /// Brings the ambient surface up after a spell of no input.
+    ///
+    /// `secondsSinceLastEventType` is the same idle clock the system screen
+    /// saver reads, so this agrees with what the Mac itself considers idle
+    /// rather than inventing a second definition. Only ever while something is
+    /// playing: a silent Mac going ambient on its own would be a screen saver
+    /// nobody asked for.
+    private func startIdleWatch() {
+        idleTimer?.cancel()
+        idleTimer = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard let self else { return }
+                guard !ambient.presenting,
+                      engine.snapshot.playback.isPlaying,
+                      ambient.idleSeconds > 0 else { continue }
+                let idle = CGEventSource.secondsSinceLastEventType(
+                    .combinedSessionState, eventType: .init(rawValue: ~0)!)
+                if idle >= ambient.idleSeconds { ambientPanel.present() }
+            }
+        }
+    }
+    #else
+    func toggleAmbient() {}
+    func dismissAmbient() {}
+    #endif
 
     func shuffleQueue() {
         engine.shuffleQueue()

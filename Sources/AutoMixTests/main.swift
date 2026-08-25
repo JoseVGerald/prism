@@ -145,14 +145,37 @@ check(close(BlendCurve.equalPower.combined(at: 0.5, correlated: true), 2.0.squar
 check(close(BlendCurve.linear.combined(at: 0.5, correlated: false), 0.7071, 1e-4),
       "linear on different songs sags to 0.707 — the 3 dB hole")
 
+// Ducking the outgoing track must not cost loudness: the incoming gain is
+// derived from the outgoing one precisely so the sum stays flat.
+var duckedFlat = true
+for i in 0...100 {
+    let t = Double(i) / 100
+    if !close(BlendCurve.duckedPower.combined(at: t, correlated: false), 1) { duckedFlat = false }
+}
+check(duckedFlat, "ducked power still holds the combined loudness flat")
+
+var duckedIsQuieter = true
+for i in 1...99 {
+    let t = Double(i) / 100
+    let ducked = BlendCurve.duckedPower.gains(at: t)
+    let plain = BlendCurve.equalPower.gains(at: t)
+    if ducked.out >= plain.out { duckedIsQuieter = false }
+    if ducked.into <= plain.into { duckedIsQuieter = false }
+}
+check(duckedIsQuieter,
+      "the outgoing track is quieter, and the incoming one louder, everywhere inside the blend")
+
+check(BlendCurve.duckedPower.gains(at: 0.5).out < 0.6,
+      "the old track is more than 3 dB down by the midpoint, not parked at 0.707")
+
 var endpointsClean = true
-for curve in [BlendCurve.equalPower, .linear] {
+for curve in [BlendCurve.equalPower, .linear, .duckedPower] {
     if !close(curve.gains(at: 0).out, 1) { endpointsClean = false }
     if !close(curve.gains(at: 0).into, 0) { endpointsClean = false }
     if !close(curve.gains(at: 1).out, 0) { endpointsClean = false }
     if !close(curve.gains(at: 1).into, 1) { endpointsClean = false }
 }
-check(endpointsClean, "both curves start and end cleanly")
+check(endpointsClean, "every curve starts and ends cleanly")
 check(close(BlendCurve.linear.gains(at: -5).out, 1)
       && close(BlendCurve.linear.gains(at: 5).into, 1),
       "gains clamp outside 0…1")

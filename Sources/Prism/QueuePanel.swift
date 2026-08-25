@@ -70,6 +70,12 @@ struct QueuePanel: View {
                                 row(entry)
                             }
                         }
+                        // Shuffling rewrites most of the list at once. Without
+                        // this the rows swap instantly and it is impossible to
+                        // see that anything happened, let alone that the track
+                        // you are on stayed put.
+                        .animation(.spring(response: 0.42, dampingFraction: 0.86),
+                                   value: snap.queue.map(\.id))
                         .padding(.horizontal, 8).padding(.bottom, 12)
                     }
                     .scrollDisabled(dragFrom != nil)

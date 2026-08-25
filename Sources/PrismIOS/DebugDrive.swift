@@ -77,6 +77,18 @@ final class DebugDrive {
             // it rather than empty.
             // `open:<browseId>` reaches the detail pane, which is otherwise
             // only accessible by tapping a search result.
+            // `crossfade:8` sets the transition length; `automix:on|off`
+            // toggles the planner. Both are otherwise only reachable through a
+            // slider inside a sheet inside the player.
+            if command.hasPrefix("crossfade:") {
+                let v = Double(command.dropFirst("crossfade:".count)) ?? 0
+                model.transitions.seconds = v
+                return
+            }
+            if command.hasPrefix("automix:") {
+                model.transitions.autoMix = command.hasSuffix("on")
+                return
+            }
             if command.hasPrefix("open:") {
                 let id = String(command.dropFirst("open:".count))
                 model.open(Shelf(browseId: id, title: "Opening…", subtitle: nil,

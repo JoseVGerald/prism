@@ -70,6 +70,26 @@ enum Bridge {
     it?.playlistPanelVideoWrapperRenderer?.primaryRenderer?.playlistPanelVideoRenderer ||
     null;
 
+  // The *other* side of YouTube Music's Song/Video pair, when the track has one.
+  //
+  // A song played from an album arrives as an ATV renderer — static art, no
+  // picture — even when an official video of the same track exists. The link
+  // between the two is not in the renderer we unwrap above: it sits alongside
+  // it, in the wrapper's `counterpart` array, and it was being dropped on the
+  // floor. That is why a song with a music video showed no way to watch it.
+  //
+  // The pairing is already in the queue we poll, so nothing extra is fetched.
+  const counterpartOf = (it) => {
+    const c = it?.playlistPanelVideoWrapperRenderer?.counterpart?.[0]
+      ?.counterpartRenderer?.playlistPanelVideoRenderer;
+    if (!c || !c.videoId) return null;
+    return {
+      videoId: c.videoId,
+      videoType: c?.navigationEndpoint?.watchEndpoint
+        ?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType || null
+    };
+  };
+
   const parseDuration = (text) => {
     if (!text) return null;
     const parts = text.split(':').map(Number);
@@ -143,7 +163,10 @@ enum Bridge {
       const r = unwrapQueueItem(it);
       if (!r) return;
       cacheEndpoints(r.videoId, r.menu);
+      const other = counterpartOf(it);
       items.push({
+        counterpartId: other?.videoId || null,
+        counterpartType: other?.videoType || null,
         index: i,
         videoId: r.videoId || '',
         title: runs(r.title) || 'Unknown',
@@ -181,6 +204,19 @@ enum Bridge {
 
     const { items, index } = readQueue();
     const currentEntry = index >= 0 ? items[index] : null;
+
+    // Which half of a Song/Video pair is on screen, and what the other half is.
+    //
+    // The queue row keeps naming the song even while the video is playing, so
+    // reading `videoType` straight off it would report ATV — no picture — over
+    // a music video. Match the player's own id against the pair instead, and
+    // report the side actually playing plus the id to switch to.
+    let activeType = currentEntry?.videoType || null;
+    let counterpartId = currentEntry?.counterpartId || null;
+    if (currentEntry && vd && vd.video_id && vd.video_id === currentEntry.counterpartId) {
+      activeType = currentEntry.counterpartType;
+      counterpartId = currentEntry.videoId;
+    }
 
     let track = null;
     if (vd && vd.video_id) {
@@ -221,7 +257,8 @@ enum Bridge {
       state, currentTime: t, duration: d, volume: vol, muted,
       repeatMode: store?.repeatMode || 'NONE',
       shuffled: !!store?.shuffleEnabled,
-      videoType: currentEntry?.videoType || null,
+      videoType: activeType,
+      counterpartId,
       videoMode: !!document.getElementById('__prism_video_css'),
       // Where the picture actually is, in CSS px, plus the viewport it sits in.
       // Swift uses this to slide the whole webview so the video covers the app
@@ -263,8 +300,106 @@ enum Bridge {
   // Set by setVideoMode; see there.
   let tightVideo = false;
 
+  // ---------------------------------------------------- video quality
+  //
+  // Left alone, YouTube picks 360p and is right to: it sizes the stream to the
+  // <video> element, and outside video mode Prism collapses that element to
+  // 0x0. Measured on a 63 Mbps connection it served 640x360 (itag 134) while
+  // 1080p sat unused in the same manifest, and forcing hd1080 switched it to
+  // 1920x1080 (itag 137) within seconds.
+  //
+  // The preference has to be re-applied per track — loading a video resets the
+  // range — so it is held here and pushed on each change of video id.
+  let videoQualityPref = 'auto';
+  let qualityAppliedTo = '';
+
+  const applyVideoQuality = (videoId) => {
+    if (!videoId || videoId === qualityAppliedTo) return;
+    const p = PLAYER();
+    if (!p || !p.setPlaybackQualityRange) return;
+    qualityAppliedTo = videoId;
+    try {
+      if (videoQualityPref === 'auto') {
+        p.setPlaybackQualityRange('auto', 'auto');
+      } else {
+        p.setPlaybackQualityRange(videoQualityPref, videoQualityPref);
+        p.setPlaybackQuality(videoQualityPref);
+      }
+    } catch (e) {}
+  };
+
+  // ------------------------------------------------------ queue tracing
+  //
+  // Answers one question: when the queue changes, who changed it?
+  //
+  // Prism's own mutations all announce themselves through `blame`, which holds
+  // a label for a couple of seconds — long enough to cover the async settle
+  // after a dispatch, short enough that an unrelated change later cannot
+  // inherit it. A change with no live label was nobody in this app, which
+  // means YouTube did it: autoplay extending the end, a dynamic-queue update,
+  // or the server replacing the queue outright.
+  //
+  // Off unless Swift turns it on, and Swift only does that under PRISM_EVAL.
+  let queueTrace = false;
+  let blameLabel = null;
+  let blameAt = 0;
+  const BLAME_TTL = 2500;
+
+  const blame = (label) => { blameLabel = label; blameAt = Date.now(); };
+
+  const currentBlame = () =>
+    (blameLabel && Date.now() - blameAt < BLAME_TTL) ? blameLabel : null;
+
+  let lastQueueIds = null;
+  let lastQueueIndex = -1;
+
+  const traceQueue = (s) => {
+    if (!queueTrace) return;
+    const ids = s.queue.map(i => i.videoId);
+    const idx = s.queueIndex;
+    if (lastQueueIds === null) { lastQueueIds = ids; lastQueueIndex = idx; return; }
+
+    const sameOrder = ids.length === lastQueueIds.length
+      && ids.every((v, i) => v === lastQueueIds[i]);
+    if (sameOrder && idx === lastQueueIndex) return;
+
+    const before = lastQueueIds, beforeIdx = lastQueueIndex;
+    lastQueueIds = ids; lastQueueIndex = idx;
+
+    const beforeSet = new Set(before), afterSet = new Set(ids);
+    const added = ids.filter(v => !beforeSet.has(v));
+    const removed = before.filter(v => !afterSet.has(v));
+
+    // Same members, different order — the case that reads as "it rearranged
+    // itself" and the one a length check would miss entirely.
+    const reordered = !sameOrder && added.length === 0 && removed.length === 0;
+
+    let shape;
+    if (before.length === ids.length && sameOrder) {
+      shape = 'index only (' + beforeIdx + ' -> ' + idx + ')';
+    } else if (reordered) {
+      shape = 'REORDERED, same ' + ids.length + ' tracks';
+    } else {
+      shape = before.length + ' -> ' + ids.length + ' tracks'
+            + (added.length ? ', +' + added.length : '')
+            + (removed.length ? ', -' + removed.length : '');
+    }
+
+    post({ kind: 'queueChange', trace: {
+      cause: currentBlame() || 'NOBODY — YouTube changed it',
+      shape,
+      index: beforeIdx + ' -> ' + idx,
+      playing: (s.track && s.track.title) || null,
+      added: added.slice(0, 4),
+      removed: removed.slice(0, 4),
+      head: ids.slice(0, 3)
+    }});
+  };
+
   const pushState = (force) => {
     const s = snapshot();
+    traceQueue(s);
+    applyVideoQuality(s.track && s.track.videoId);
     // Cheap change detection so we are not shipping identical payloads 4x a
     // second; time is rounded so a playing track still updates the scrubber.
     // Order is part of the identity: a reorder changes neither the length nor
@@ -272,6 +407,11 @@ enum Bridge {
     const hash = [s.state, s.track?.videoId, Math.floor(s.currentTime), s.duration,
                   s.queue.length, s.queueIndex, s.repeatMode, s.shuffled,
                   s.volume, s.muted, s.signedIn, s.undoLabel,
+                  // The pairing lands a beat after the track does — the queue
+                  // re-renders once the wrapper arrives — so without these two
+                  // the push carrying it is swallowed as a duplicate and the
+                  // Song/Video switcher never appears.
+                  s.videoType, s.counterpartId,
                   s.queue.map(i => i.videoId).join(',')].join('|');
     if (!force && hash === lastHash) return;
     lastHash = hash;
@@ -457,8 +597,8 @@ enum Bridge {
       const s = p.getPlayerState();
       (s === 1 || s === 3) ? p.pauseVideo() : p.playVideo();
     },
-    next: () => { PLAYER()?.nextVideo(); },
-    prev: () => { PLAYER()?.previousVideo(); },
+    next: () => { blame('next (button, menu or media key)'); PLAYER()?.nextVideo(); },
+    prev: () => { blame('previous'); PLAYER()?.previousVideo(); },
     seek: (t) => { PLAYER()?.seekTo(t, true); },
     setVolume: (v) => { PLAYER()?.setVolume(v); },
     mute:   () => { PLAYER()?.mute?.(); },
@@ -488,6 +628,7 @@ enum Bridge {
     // remove silently did nothing and jump threw. The store actions below are
     // exactly what YouTube's own handlers dispatch.
     jump: (i) => {
+      blame('jump to queue row ' + i);
       const q = QUEUE(); if (!q) return;
       const items = q.getItems() || [];
       if (i < 0 || i >= items.length) return;
@@ -497,6 +638,7 @@ enum Bridge {
     },
 
     undoQueue: () => {
+      blame('undo');
       const q = QUEUE(); if (!q) return;
       const snap = undoStack.pop();
       if (!snap) return;
@@ -516,6 +658,7 @@ enum Bridge {
     },
 
     removeAt: (i) => {
+      blame('remove row ' + i);
       const q = QUEUE(); if (!q) return;
       const items = q.getItems() || [];
       if (i < 0 || i >= items.length) return;
@@ -548,6 +691,7 @@ enum Bridge {
     // `toIndex` is applied *after* the item is spliced out, so it is a final
     // position rather than a pre-removal one.
     moveItem: (from, to) => {
+      blame('drag row ' + from + ' to ' + to);
       const q = QUEUE(); if (!q) return;
       const n = (q.getItems() || []).length;
       if (from < 0 || from >= n) return;
@@ -569,6 +713,7 @@ enum Bridge {
     // survives and everything queued behind it goes. Passing no payload at all
     // is a full wipe — an empty array is not, it makes `nextQueueItemId` -Inf.
     clearQueue: () => {
+      blame('clear queue');
       const q = QUEUE(); if (!q) return;
       const items = q.getItems() || [];
       const cur = q.getCurrentItemIndex();
@@ -585,7 +730,40 @@ enum Bridge {
       } catch (e) {}
     },
 
-    shuffle: () => { try { QUEUE()?.shuffle(); } catch (e) {} },
+    // Shuffles what is *coming*, leaving the track you are listening to alone.
+    //
+    // YouTube's own `shuffle()` reorders the whole list including the current
+    // item, so pressing it mid-song threw you somewhere else in the queue —
+    // which is not what shuffling a queue means when something is already
+    // playing. Everything up to and including the current index is kept in
+    // place (so history stays in the order it happened) and only the tail is
+    // permuted, with a plain Fisher-Yates.
+    shuffle: () => {
+      blame('shuffle (Cmd-Shift-S or the shuffle button)');
+      const q = QUEUE(); if (!q) return;
+      const items = q.getItems() || [];
+      const cur = q.getCurrentItemIndex();
+
+      // Nothing playing, or nothing after it: fall back to YouTube's shuffle,
+      // which is the right behaviour for an idle queue.
+      if (cur < 0 || cur >= items.length - 1) {
+        try { q.shuffle(); } catch (e) {}
+        return;
+      }
+
+      pushUndo('shuffle');
+      const head = items.slice(0, cur + 1);
+      const tail = items.slice(cur + 1);
+      for (let i = tail.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const t = tail[i]; tail[i] = tail[j]; tail[j] = t;
+      }
+      try {
+        q.store.dispatch({ type: 'RESET_ITEMS', payload: head.concat(tail) });
+        q.store.dispatch({ type: 'SET_INDEX', payload: cur });
+      } catch (e) {}
+      pushState(true);
+    },
 
     // Cycle NONE -> ALL -> ONE by driving YTM's own repeat button, which keeps
     // its internal state and our snapshot in agreement.
@@ -606,6 +784,8 @@ enum Bridge {
     // where possible. The fallback builds the conventional `RDAMVM` mix id,
     // which YouTube Music accepts for a song seed.
     playVideo: (videoId, radio) => {
+      blame(radio ? 'play track — seeds a RADIO, which replaces the queue'
+                  : 'play track (no radio)');
       const app = APP();
       if (!app) { location.href = '/watch?v=' + videoId; return; }
       if (radio) {
@@ -615,6 +795,44 @@ enum Bridge {
         return;
       }
       app.resolveCommand({ watchEndpoint: { videoId } });
+    },
+
+    // Lets Swift attribute a change it is about to cause. Used by the
+    // crossfade handover, which advances the queue without any button press.
+    noteQueueCause: (label) => { blame(String(label)); return true; },
+
+    setQueueTrace: (on) => { queueTrace = !!on; return true; },
+
+    // 'auto', or a YouTube quality level such as 'hd1080'. Applied now and
+    // again on every track, since loading one resets the range.
+    setVideoQuality: (level) => {
+      videoQualityPref = level || 'auto';
+      qualityAppliedTo = '';
+      const p = PLAYER();
+      let vd = null;
+      try { vd = p && p.getVideoData(); } catch (e) {}
+      applyVideoQuality(vd && vd.video_id);
+      return true;
+    },
+
+    // Switches between the song and its music video.
+    //
+    // Deliberately YouTube's own control rather than `loadVideoById` on the
+    // counterpart, which would restart from zero and drop the queue.
+    //
+    // Clicking the button carries the position across. Measured against wall
+    // clock over a full round trip, each switch loses 0.75-0.93s to loading and
+    // nothing else: -1.68s net, song to video and back. (YouTube also ships a
+    // `segmentMap` next to the counterpart, for pairs whose timelines really do
+    // differ; this pair's do not, so it is not visible in that measurement.)
+    setAVMode: (wantVideo) => {
+      blame('song/video switch');
+      const t = document.querySelector('ytmusic-av-toggle');
+      if (!t) return false;
+      const b = t.querySelector(wantVideo ? '.video-button' : '.song-button');
+      if (!b) return false;
+      b.click();
+      return true;
     },
 
     // Strips YouTube's chrome and blows the <video> up to fill the viewport, so
@@ -838,11 +1056,13 @@ enum Bridge {
     },
 
     playPlaylist: (playlistId) => {
+      blame('play playlist');
       const app = APP();
       if (app) app.resolveCommand({ watchEndpoint: { playlistId } });
     },
 
     playBrowse: (browseId, playlistId) => {
+      blame('play album/artist');
       const app = APP();
       if (!app) return;
       if (playlistId) app.resolveCommand({ watchEndpoint: { playlistId } });
@@ -981,7 +1201,199 @@ const allScopeSearch = async (reqId, query) => {
   };
 
   // ----------------------------------------------------------- async queries
+  // --------------------------------------------------- audio quality
+  //
+  // Audio quality is an *account* preference, not a player one. The player
+  // exposes `setUserAudioQualitySetting`, and it is inert: every value from 0
+  // to 5 was pushed into it live and `getUserAudioQualitySetting` stayed on 2
+  // throughout, with the stream still on opus itag 251. There is also no
+  // InnerTube surface for it — `browse` on SPaccount_playback returns
+  // INVALID_ARGUMENT, and the account menu carries only an
+  // `applicationSettingsEndpoint: { hack: true }`, which is a client-side
+  // dialog rather than a page.
+  //
+  // So the dialog is the mechanism. Nothing else moves this setting.
+  const AUDIO_QUALITY_LABELS = ['Low', 'Normal', 'High'];
+
+  // What this page has successfully set, which outranks what the dialog says.
+  //
+  // The settings response is fetched once per document and cached by the app,
+  // so a change made during the session is invisible to every later read:
+  // measured, setting High reported success, the very next read said Normal,
+  // and a full reload said High. Without this the panel silently reverts to the
+  // old value the next time it is opened, which looks exactly like the control
+  // refusing to take the change.
+  //
+  // Page-scoped on purpose. The bridge re-injects on every document, so a
+  // reload drops it and the freshly fetched value wins again.
+  let audioQualityWritten = null;
+
+  const settingsDialog = () => document.querySelector('ytmusic-dialog');
+
+  const settle = (ms) => new Promise(r => setTimeout(r, ms));
+
+  /// Opens the settings dialog on its Playback tab and hands back the row that
+  /// owns the audio quality dropdown.
+  const openAudioQualityRow = async () => {
+    const app = APP();
+    if (!app) return null;
+
+    // Always re-issue the endpoint, never reuse a dialog that is already there.
+    //
+    // Closing the dialog leaves its element in the DOM, holding the data it was
+    // built with — so a second read answers from a snapshot of the setting as it
+    // was on the first read, forever. That is what made the panel insist the
+    // account was on Normal: the reply came back in 103ms (too fast to have
+    // opened anything) saying Normal, while the account was on High and the
+    // stream was itag 141 at 257kbps. Re-resolving builds a fresh renderer.
+    const rowIn = (dlg) => !dlg ? null
+      : ([...dlg.querySelectorAll('ytmusic-setting-single-option-menu-renderer')]
+          .find(r => /audio quality/i.test(r.innerText || '')) || null);
+
+    // Whatever is on screen now is the thing not to trust. Re-resolving replaces
+    // the renderer with a new object, so waiting for the identity to change is
+    // what proves the data is fresh — without it a read can land on the old row
+    // before the rebuild finishes and report the stale value anyway.
+    const stale = rowIn(settingsDialog());
+    app.resolveCommand({ applicationSettingsEndpoint: { hack: true } });
+
+    for (let i = 0; i < 40; i++) {
+      const dlg = settingsDialog();
+      const r = rowIn(dlg);
+      if (r && r !== stale) return r;
+      // A rebuilt dialog lands on General, where the row does not exist at all;
+      // the dropdown only lives under Playback.
+      if (dlg) {
+        const tab = [...dlg.querySelectorAll('*')].find(
+          e => e.children.length === 0 && (e.textContent || '').trim() === 'Playback');
+        if (tab) tab.click();
+      }
+      await settle(200);
+    }
+    return rowIn(settingsDialog());
+  };
+
+  const closeSettings = () => {
+    const dlg = settingsDialog();
+    if (!dlg) return;
+    // Closed, never removed. Tearing the element out leaves the app believing
+    // the dialog is still up, and every later attempt to open it does nothing.
+    try { dlg.close ? dlg.close() : dlg.removeAttribute('opened'); } catch (e) {}
+  };
+
+  /// The setting's options, straight off the renderer's data.
+  ///
+  /// Not read out of the rendered text, and not set by clicking. The dropdown
+  /// is a Polymer `tp-yt-paper-dropdown-menu` that opens on a gesture, and a
+  /// synthetic `.click()` does not open it — the listbox stays with a null
+  /// `offsetParent` and the option elements underneath are inert `div`s. Every
+  /// click-driven attempt reported success and changed nothing.
+  ///
+  /// The data behind it carries what is needed: each option has a
+  /// `setSettingEndpoint` (MUSIC_WEB_AUDIO_QUALITY, item 304, Low/Normal/High
+  /// as 1/2/3) and a `selected` flag.
+  const audioQualityItems = (row) => {
+    try {
+      return (row.data.items || [])
+        .map(i => i.settingMenuItemRenderer)
+        .filter(i => i && AUDIO_QUALITY_LABELS.includes(i.name));
+    } catch (e) { return []; }
+  };
+
+  const readAudioQuality = (row) => {
+    if (audioQualityWritten) return audioQualityWritten;
+    const sel = audioQualityItems(row).find(i => i.selected);
+    return sel ? sel.name : null;
+  };
+
   const queries = {
+
+    audioQuality: async (reqId, want) => {
+      const row = await openAudioQualityRow();
+      if (!row) {
+        post({ kind: 'audioQuality', requestId: reqId,
+               result: { ok: false, current: null, reason: 'no settings dialog' }});
+        return;
+      }
+
+      const before = readAudioQuality(row);
+      if (!want || want === before) {
+        closeSettings();
+        post({ kind: 'audioQuality', requestId: reqId,
+               result: { ok: true, current: before, changed: false }});
+        return;
+      }
+
+      const option = audioQualityItems(row).find(i => i.name === want);
+      if (!option || !option.updateServiceEndpoint) {
+        closeSettings();
+        post({ kind: 'audioQuality', requestId: reqId,
+               result: { ok: false, current: before, reason: 'no endpoint for ' + want }});
+        return;
+      }
+
+      let dispatched = true;
+      try { APP().resolveCommand(option.updateServiceEndpoint); }
+      catch (e) { dispatched = false; }
+      if (dispatched) audioQualityWritten = want;
+      await settle(700);
+      closeSettings();
+
+      // Reported as the requested value rather than re-read, because the
+      // renderer's own `selected` flags do not move when the endpoint lands —
+      // the dialog keeps showing the old choice until the page is reloaded.
+      // Confirmed the hard way: after dispatching High the model still said
+      // Normal, a reload said High, and the next track came down as itag 141
+      // at 257 kbps instead of opus 251 at 130.
+      post({ kind: 'audioQuality', requestId: reqId,
+             result: { ok: dispatched, current: dispatched ? want : before,
+                       changed: dispatched,
+                       reason: dispatched ? null : 'YouTube Music rejected the change' }});
+    },
+
+    /// What is actually coming down the wire, as opposed to what was asked for.
+    streamQuality: async (reqId) => {
+      const p = PLAYER();
+      let stats = null;
+      try { stats = p && p.getStatsForNerds ? p.getStatsForNerds() : null; } catch (e) {}
+      // "avc1.4d401e (134) / opus (251)" is video first, audio second — but only
+      // when both are being decoded. Outside video mode the element is 0x0 and
+      // the string carries the audio alone, so reading by position put an opus
+      // itag in the video slot. Each itag is classified against the manifest
+      // instead, which cannot be fooled by a missing half.
+      const codecs = stats && stats.codecs || '';
+      const itags = (codecs.match(/\((\d+)\)/g) || [])
+        .map(s => Number(s.replace(/[()]/g, '')));
+
+      let all = [];
+      try {
+        const r = p.getPlayerResponse ? p.getPlayerResponse() : null;
+        all = ((r && r.streamingData && r.streamingData.adaptiveFormats) || [])
+          .map(f => ({ itag: f.itag,
+                       audio: (f.mimeType || '').indexOf('audio') === 0,
+                       bitrate: f.averageBitrate || f.bitrate,
+                       codec: ((f.mimeType || '').match(/codecs="([^"]+)"/) || [])[1] || null }));
+      } catch (e) {}
+
+      const kindOf = (itag) => all.find(f => f.itag === itag) || null;
+      const audio = itags.find(t => kindOf(t) && kindOf(t).audio) ?? null;
+      const video = itags.find(t => kindOf(t) && !kindOf(t).audio) ?? null;
+
+      const formats = all.filter(f => f.audio);
+      const playing = kindOf(audio);
+      post({ kind: 'streamQuality', requestId: reqId, result: {
+        audioItag: audio, videoItag: video,
+        audioCodec: playing && playing.codec,
+        audioBitrate: playing && playing.bitrate,
+        bestAudioBitrate: formats.reduce((m, f) => Math.max(m, f.bitrate || 0), 0) || null,
+        // "0x0" is what a collapsed video element reports, which is not a
+        // resolution and should not be shown as one.
+        resolution: (stats && stats.resolution || '').indexOf('0x0') === 0
+          ? null : (stats && stats.resolution || null),
+        videoQuality: (() => { try { return p.getPlaybackQuality(); } catch (e) { return null; } })()
+      }});
+    },
+
     // Adding to the queue is a query, not a fire-and-forget command, because
     // YouTube's dispatcher returns true even when it quietly drops the request.
     // The only trustworthy signal is whether the queue actually grew, so we
@@ -1007,6 +1419,7 @@ const allScopeSearch = async (reqId, query) => {
         return;
       }
 
+      blame(atEnd ? 'add to queue' : 'play next');
       pushUndo(atEnd ? 'add' : 'play next');
       const renderer = await fetchQueueRenderer(videoId);
       if (!renderer) {

@@ -80,12 +80,21 @@ public struct TempoRamp: Equatable, Sendable {
 public enum TempoRampPlanner {
 
     /// Furthest the *outgoing* track is allowed to bend. It is audible while it
-    /// bends, so it gets the tighter budget.
-    public static let maxOutgoingPercent = 3.0
-    /// Furthest the *incoming* track is allowed to bend. It is set silently and
-    /// then simply kept, so it can take more of the difference — but not so
-    /// much that the track is left noticeably off its own tempo.
-    public static let maxIncomingPercent = 6.0
+    /// bends, so it still gets the tighter budget — but a bend nobody notices
+    /// is not worth the freeze it costs, so this is deliberately past the point
+    /// of being subtle. The old song audibly leans.
+    public static let maxOutgoingPercent = 6.0
+
+    /// Furthest the *incoming* track is allowed to bend.
+    ///
+    /// This is the generous one, and it can be, because of where the bend
+    /// lands. The rate is set once while the track is still paused and silent,
+    /// held across the blend, and released at the handover — so the only part
+    /// of the new song played off its own tempo is its opening, underneath the
+    /// old one, which is exactly the stretch a DJ pulls to drag a record onto
+    /// the beat. It costs a tempo step at the seam, which is the price of
+    /// bending this far and is why it is not larger still.
+    public static let maxIncomingPercent = 12.0
 
     /// Window within the blend where an outgoing rate change is masked well
     /// enough to spend one. Before 0.60 the outgoing track is still too loud to
@@ -202,9 +211,10 @@ public enum TempoRampPlanner {
         }
     }
 
-    /// How far a bend leans when there is no tempo to aim at. Small enough to
-    /// read as the track easing off rather than as a fault.
-    public static let stylisticPercent = 2.5
+    /// How far a bend leans when there is no tempo to aim at. Big enough now to
+    /// be plainly heard as the track easing off, while staying short of the
+    /// point where it reads as a fault.
+    public static let stylisticPercent = 4.0
 
     /// A lead-in for the overwhelmingly common case where nobody knows the
     /// tempo of either track.

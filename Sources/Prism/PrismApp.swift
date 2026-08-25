@@ -37,6 +37,15 @@ struct PrismApp: App {
                 Button("Cycle Repeat") { model.engine.cycleRepeat() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
             }
+            CommandMenu("Settings") {
+                Button("Settings…") { model.showSettings = true }
+                    .keyboardShortcut(",", modifiers: .command)
+                Divider()
+                Button(model.ambient.presenting ? "Hide Ambient" : "Ambient") {
+                    model.toggleAmbient()
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+            }
             CommandMenu("Go") {
                 Button("For You") { model.route = .forYou }
                     .keyboardShortcut("1", modifiers: .command)

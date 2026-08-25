@@ -41,6 +41,23 @@ struct RootView: View {
                     Backdrop(url: snap.track?.artworkURL)
                 }
 
+                // The rim of light, under the panels so the glass refracts it.
+                // Off in video mode: a scrim plus a rim is two competing
+                // vignettes. Gated on window visibility for the same reason the
+                // equalizer is — an occluded window should paint nothing.
+                if model.ambient.rimGlow && !model.videoMode {
+                    AmbientLight(palette: model.palette,
+                                 isPlaying: snap.playback.isPlaying,
+                                 thickness: model.ambient.thickness,
+                                 glow: model.ambient.glow,
+                                 corner: 12,
+                                 animating: model.windowVisible,
+                                 beatPeriod: model.beatPeriod,
+                                 pulse: model.ambient.pulse)
+                        .ignoresSafeArea()
+                        .transition(.opacity)
+                }
+
                 // Deliberately *not* wrapped in a GlassEffectContainer: that
                 // groups glass shapes for morphing and cannot lay out an app
                 // shell containing scroll views — it lets their content escape
@@ -92,6 +109,7 @@ struct RootView: View {
         }
         .frame(minWidth: 1000, minHeight: 640)
         .preferredColorScheme(.dark)
+        .environment(\.artPalette, model.palette)
         .animation(.easeInOut(duration: 0.22), value: model.status)
         // .task(id:) rather than .onChange: a track is usually already playing
         // when the window appears, and onChange alone never fires for it.
@@ -115,11 +133,29 @@ struct RootView: View {
                 }
             }
         }
-        .onChange(of: snap.track?.videoId) { _, _ in model.onSnapshot(snap) }
+        #if canImport(AppKit)
+        .background {
+            WindowVisibility { model.windowVisible = $0 }.frame(width: 0, height: 0)
+        }
+        #endif
+        .onChange(of: snap.track?.videoId) { _, _ in
+            model.onSnapshot(snap)
+            model.prefetchTempoIfNeeded()
+        }
         .onChange(of: snap.hasVideo) { _, has in model.syncVideoMode(hasVideo: has) }
         // The mini player and the notch island belong to this window's session,
         // so they go when it does rather than stranding panels with no way back.
         .onDisappear { model.closeFloating() }
+        // The Settings menu has no view to hang a popover on, so the panel is
+        // presented from the root as a sheet.
+        .sheet(isPresented: $model.showSettings) {
+            VStack(spacing: 0) {
+                SettingsPanel(model: model)
+                Button("Done") { model.showSettings = false }
+                    .keyboardShortcut(.defaultAction)
+                    .padding(.bottom, 16)
+            }
+        }
         .animation(.easeInOut(duration: 0.35), value: model.videoMode)
     }
 }
@@ -288,7 +324,11 @@ private struct Sidebar: View {
     }
 
     private func isActive(_ r: Route) -> Bool {
-        if case .detail = model.route, case .library = r { return true }
+        // A detail page has no sidebar entry of its own, so it lights the one it
+        // was opened from. This used to be hardcoded to Library, which told
+        // anyone who arrived from a search that they were somewhere they had
+        // never been.
+        if case .detail = model.route { return model.detailOrigin == r }
         return model.route == r
     }
 
@@ -302,13 +342,14 @@ private struct Sidebar: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12).padding(.vertical, 9)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle(pressedScale: 0.97))
         .background {
             if active {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(.white.opacity(0.14))
             }
         }
+        .hoverBloom(scale: 1.02, radius: 10, opacity: 0.3)
     }
 }
 
@@ -382,18 +423,33 @@ private struct CompactNowPlaying: View {
                     if !model.videoMode {
                         HStack(spacing: 26) {
                             EqualizerView(palette: model.palette,
-                                          isPlaying: snap.playback.isPlaying, seed: 0)
+                                          isPlaying: snap.playback.isPlaying && model.windowVisible, seed: 0)
                                 .frame(height: art)
                                 .frame(maxWidth: .infinity)
 
                             Artwork(url: snap.track?.artworkURL, corner: 22)
                                 .frame(width: art, height: art)
+                                // The bloom (frame 1c). One small static layer
+                                // behind the art rather than anything
+                                // full-screen — a radial gradient already falls
+                                // off softly, so it needs no blur of its own.
+                                .background {
+                                    if model.ambient.rimGlow {
+                                        RadialGradient(
+                                            colors: [model.palette.accent.opacity(0.55),
+                                                     model.palette.mid.opacity(0.3), .clear],
+                                            center: .center,
+                                            startRadius: 40, endRadius: 220)
+                                            .scaleEffect(1.45)
+                                            .allowsHitTesting(false)
+                                    }
+                                }
                                 .shadow(color: .black.opacity(0.6), radius: 36, y: 18)
                                 .onTapGesture { model.toggleCompact() }
                                 .help("Click to exit compact mode")
 
                             EqualizerView(palette: model.palette,
-                                          isPlaying: snap.playback.isPlaying, seed: 137)
+                                          isPlaying: snap.playback.isPlaying && model.windowVisible, seed: 137)
                                 .frame(height: art)
                                 .frame(maxWidth: .infinity)
                         }
@@ -429,7 +485,8 @@ private struct CompactNowPlaying: View {
 
                 HStack(spacing: 10) {
                     Spacer()
-                    if snap.hasVideo { VideoToggle(model: model) }
+                    if snap.hasCounterpart { AVToggle(model: model) }
+                    else if snap.hasVideo { VideoToggle(model: model) }
                     GlassIconButton(system: "arrow.down.right.and.arrow.up.left",
                                     size: 13, diameter: 34) { model.toggleCompact() }
                         .help("Exit compact mode")
@@ -470,11 +527,14 @@ private struct CompactControls: View {
         VStack(spacing: 12) {
             HStack(spacing: 16) {
                 GlassIconButton(system: "shuffle", size: 13, diameter: 32,
-                                active: snap.shuffled ?? false) { engine.shuffleQueue() }
-                GlassIconButton(system: "backward.fill", size: 15, diameter: 36) { engine.previous() }
+                                active: snap.shuffled ?? false,
+                                kick: .spin, palette: model.palette) { model.shuffleQueue() }
+                GlassIconButton(system: "backward.fill", size: 15, diameter: 36,
+                                kick: .nudge(-5), palette: model.palette) { engine.previous() }
                 GlassIconButton(system: snap.playback.isPlaying ? "pause.fill" : "play.fill",
-                                size: 19, diameter: 50, prominent: true) { engine.togglePlayPause() }
-                GlassIconButton(system: "forward.fill", size: 15, diameter: 36) { engine.next() }
+                                size: 19, diameter: 50, prominent: true, palette: model.palette) { engine.togglePlayPause() }
+                GlassIconButton(system: "forward.fill", size: 15, diameter: 36,
+                                kick: .nudge(5), palette: model.palette) { engine.next() }
                 GlassIconButton(system: snap.repeatMode == "ONE" ? "repeat.1" : "repeat",
                                 size: 13, diameter: 32,
                                 active: snap.repeatMode != "NONE") { engine.cycleRepeat() }

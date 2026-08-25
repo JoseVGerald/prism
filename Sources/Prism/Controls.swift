@@ -131,7 +131,8 @@ struct CrossfadeControl: View {
                                  ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
                 .frame(width: 30, height: 30)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle())
+        .hoverBloom(scale: 1.08, radius: 12)
         .help("Transitions")
         .popover(isPresented: $open) {
             VStack(alignment: .leading, spacing: 12) {
