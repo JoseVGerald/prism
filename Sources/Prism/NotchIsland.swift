@@ -212,20 +212,60 @@ struct NotchIslandView: View {
     @State private var hoverTask: Task<Void, Never>?
     @State private var pop = false
 
+    /// Which face of the island is showing. Swipe right on the notch for the
+    /// utility side, left to come back.
+    private enum Face { case player, utility }
+    @State private var face: Face = .player
+
     private var snap: EngineSnapshot { model.engine.snapshot }
     /// Only alive when there is a track. With nothing loaded the notch behaves
     /// exactly like stock macOS.
     private var live: Bool { snap.track != nil }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if expanded && live { island } else { chip }
-            Spacer(minLength: 0)
+        // Both faces are laid out side by side and slid, rather than swapped
+        // with a transition: a transition cannot know which way the swipe went,
+        // so going back would animate the same direction as going forward.
+        ZStack(alignment: .top) {
+            VStack(spacing: 0) {
+                if expanded && live { island } else { chip }
+                Spacer(minLength: 0)
+            }
+            .frame(width: Self.width, alignment: .top)
+            .offset(x: face == .player ? 0 : -Self.width)
+
+            VStack(spacing: 0) {
+                NotchUtilityView(notch: notch)
+                Spacer(minLength: 0)
+            }
+            .frame(width: Self.width, alignment: .top)
+            .offset(x: face == .player ? Self.width : 0)
         }
         .frame(width: Self.width, height: Self.height, alignment: .top)
+        .clipped()
+        // Sits over the notch itself, where the fingers are.
+        .overlay(alignment: .top) {
+            TrackpadSwipe { dx in
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
+                    face = dx > 0 ? .utility : .player
+                }
+                if dx > 0 { expanded = false }
+            }
+            .frame(width: notch.width + 150, height: max(notch.height, 20))
+        }
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: expanded)
         .animation(.easeInOut(duration: 0.2), value: live)
+        .animation(.spring(response: 0.42, dampingFraction: 0.86), value: face)
         .preferredColorScheme(.dark)
+        .onHover { inside in
+            guard !inside, face == .utility else { return }
+            hoverTask?.cancel()
+            hoverTask = Task {
+                try? await Task.sleep(for: .milliseconds(900))
+                guard !Task.isCancelled else { return }
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { face = .player }
+            }
+        }
         .onChange(of: snap.track?.videoId) { _, _ in
             pop = true
             Task { @MainActor in
