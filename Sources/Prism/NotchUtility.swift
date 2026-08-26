@@ -89,8 +89,18 @@ final class NotchSwipeHost: NSView {
         guard !fired, abs(travel) > threshold,
               abs(travel) > abs(event.scrollingDeltaY) * 1.5 else { return }
         fired = true
-        log("  -> swipe \(travel > 0 ? "RIGHT" : "LEFT") (travel \(Int(travel)))")
-        onSwipe?(travel)
+
+        // Which way the *fingers* went, not which way the content scrolled.
+        //
+        // With natural scrolling on — the default, and what this Mac has — a
+        // swipe towards the right reports a negative horizontal delta, so
+        // reading the raw sign opens the wrong face. `isDirectionInvertedFromDevice`
+        // is the system's own answer to this, so the same physical gesture works
+        // whichever way the preference is set.
+        let towardsUtility = event.isDirectionInvertedFromDevice ? travel < 0 : travel > 0
+        log("  -> swipe \(towardsUtility ? "RIGHT" : "LEFT") (travel \(Int(travel)), "
+            + "inverted \(event.isDirectionInvertedFromDevice))")
+        onSwipe?(towardsUtility ? 1 : -1)
     }
 }
 
