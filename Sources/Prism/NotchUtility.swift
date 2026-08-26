@@ -7,89 +7,90 @@ import UniformTypeIdentifiers
 ///
 /// Not a `DragGesture`: a two-finger swipe on a trackpad is not a drag, it is a
 /// scroll with no click, so SwiftUI's drag gestures never see it. It arrives as
-/// `scrollWheel` with precise deltas, which is what this listens for.
+/// `scrollWheel`.
 ///
-/// And not a view in the hierarchy either. The first version was an `NSView` in
-/// an `.overlay`, which sat on top of the chip and swallowed its mouse tracking
-/// — the island stopped expanding on hover, because `.onHover` underneath never
-/// saw the pointer again. A local event monitor reads the same scrolls without
-/// occupying any space or taking part in hit-testing.
-struct TrackpadSwipe: NSViewRepresentable {
-    let notch: CGSize
+/// Two earlier attempts are worth recording, because both failed for reasons
+/// that are easy to walk back into.
+///
+/// An `NSView` in a SwiftUI `.overlay` receives the scroll, but it also sits in
+/// front of the chip and takes part in hit-testing — the island stopped
+/// expanding, because `.onHover` underneath never saw the pointer again.
+///
+/// A local `NSEvent` monitor occupies no space, but never fired: the island's
+/// panel is non-activating and cannot become key, so scrolls over it are not
+/// dispatched to this application the way mouse-moved events are.
+///
+/// So the handler is the hosting view's *parent*. Ancestors get `scrollWheel`
+/// through the responder chain when no descendant consumes it, which means this
+/// sees every swipe over the panel while occupying no space in the layout and
+/// covering nothing.
+final class NotchSwipeHost: NSView {
     /// Positive is a swipe to the right.
-    var onSwipe: (CGFloat) -> Void
+    var onSwipe: ((CGFloat) -> Void)?
+    var notch: CGSize = .zero
 
-    func makeNSView(context: Context) -> NSView {
-        let v = MonitorView()
-        v.notch = notch
-        v.onSwipe = onSwipe
-        return v
+    private var travel: CGFloat = 0
+    private var fired = false
+    private let threshold: CGFloat = 20
+
+    /// `~/.prism-eval/swipe.log`, and only under PRISM_EVAL. A gesture that does
+    /// nothing is indistinguishable from one that never arrived; this says which.
+    private static let logURL: URL? = {
+        guard ProcessInfo.processInfo.environment["PRISM_EVAL"] == "1" else { return nil }
+        return URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".prism-eval/swipe.log")
+    }()
+
+    private func log(_ line: String) {
+        guard let url = Self.logURL else { return }
+        let text = line + "\n"
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(Data(text.utf8)); try? h.close()
+        } else {
+            try? text.write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 
-    func updateNSView(_ view: NSView, context: Context) {
-        guard let v = view as? MonitorView else { return }
-        v.notch = notch
-        v.onSwipe = onSwipe
-    }
+    override func scrollWheel(with event: NSEvent) {
+        let p = event.locationInWindow
+        log(String(format: "scroll precise=%@ phase=%lu momentum=%lu dx=%.1f dy=%.1f at (%.0f,%.0f)",
+                   event.hasPreciseScrollingDeltas ? "Y" : "N",
+                   event.phase.rawValue, event.momentumPhase.rawValue,
+                   event.scrollingDeltaX, event.scrollingDeltaY, p.x, p.y))
 
-    /// Zero-sized and untouchable; it exists only to know which window to watch.
-    final class MonitorView: NSView {
-        var onSwipe: ((CGFloat) -> Void)?
-        var notch: CGSize = .zero
-
-        private var monitor: Any?
-        private var travel: CGFloat = 0
-        private var fired = false
-        private let threshold: CGFloat = 26
-
-        override var isOpaque: Bool { false }
-        /// Never intercept anything. Belt and braces alongside being zero-sized.
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
-            guard window != nil else { return }
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-                MainActor.assumeIsolated { self?.consider(event) }
-                return event
-            }
+        // A mouse wheel has no horizontal axis worth reading here and should
+        // keep scrolling whatever is underneath.
+        guard event.hasPreciseScrollingDeltas else {
+            super.scrollWheel(with: event)
+            return
         }
 
-        private func consider(_ event: NSEvent) {
-            guard let window, event.window === window else { return }
-            // `hasPreciseScrollingDeltas` is what separates a trackpad from a
-            // mouse wheel. A wheel has no horizontal axis worth reading here and
-            // should keep scrolling whatever is underneath.
-            guard event.hasPreciseScrollingDeltas else { return }
+        // No position gate. There was one — "must be within the notch strip" —
+        // and it rejected every real swipe: 1248 scroll events logged, none
+        // accepted, because the pointer sits around y=190 in a 300pt panel
+        // rather than up in the top 32pt where the notch is drawn. Scrolls only
+        // reach this view when the pointer is over the panel at all, and the
+        // panel *is* the island, so being over it is the whole test.
 
-            // Only over the notch and a little either side, so a swipe further
-            // down the transparent panel does not flip the face.
-            let p = event.locationInWindow
-            let h = window.frame.height, w = window.frame.width
-            guard p.y > h - notch.height - 10,
-                  abs(p.x - w / 2) < notch.width / 2 + 90 else { return }
-
-            switch event.phase {
-            case .began:
-                travel = 0
-                fired = false
-            case .changed:
-                travel += event.scrollingDeltaX
-                // Horizontal intent only: a mostly-vertical scroll that drifts
-                // sideways should not flip the page.
-                guard !fired, abs(travel) > threshold,
-                      abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
-                else { return }
-                fired = true
-                onSwipe?(travel)
-            case .ended, .cancelled:
-                travel = 0
-                fired = false
-            default:
-                break
-            }
+        switch event.phase {
+        case .began:
+            travel = 0
+            fired = false
+        case .ended, .cancelled:
+            travel = 0
+            fired = false
+        default:
+            break
         }
+
+        travel += event.scrollingDeltaX
+        // Horizontal intent only: a mostly-vertical scroll that drifts sideways
+        // should not flip the page.
+        guard !fired, abs(travel) > threshold,
+              abs(travel) > abs(event.scrollingDeltaY) * 1.5 else { return }
+        fired = true
+        log("  -> swipe \(travel > 0 ? "RIGHT" : "LEFT") (travel \(Int(travel)))")
+        onSwipe?(travel)
     }
 }
 

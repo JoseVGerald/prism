@@ -20,6 +20,18 @@ final class NotchController {
     /// Set only by `close()`. Distinguishes "the user put it away" from "it went
     /// missing", so re-asserting visibility cannot resurrect a deliberate close.
     private var dismissed = false
+    /// Which face the island is showing. Lives here because the swipe arrives
+    /// on the panel, not inside SwiftUI.
+    private var showUtility = false
+    private var hosting: NSHostingView<NotchIslandView>?
+
+    private func setFace(utility: Bool) {
+        guard showUtility != utility else { return }
+        showUtility = utility
+        guard let hosting, let screen = Self.notchedScreen,
+              let notch = Self.notchSize(screen) else { return }
+        hosting.rootView = NotchIslandView(model: model, notch: notch, showUtility: utility)
+    }
 
     init(model: AppModel) {
         self.model = model
@@ -107,8 +119,27 @@ final class NotchController {
         // Prism's that should vanish because the app was hidden.
         let p = FloatingPanel(size: size, level: .init(Int(CGWindowLevelForKey(.mainMenuWindow)) + 3),
                               movable: false, hidesWithApp: false)
-        p.contentView = NSHostingView(
-            rootView: NotchIslandView(model: model, notch: notch))
+        // The hosting view goes *inside* a plain NSView that handles the swipe.
+        // As an ancestor it gets scrollWheel through the responder chain while
+        // covering nothing — see NotchSwipeHost for the two approaches that
+        // failed before this one.
+        let host = NSHostingView(rootView: NotchIslandView(model: model, notch: notch,
+                                                           showUtility: showUtility))
+        host.translatesAutoresizingMaskIntoConstraints = false
+        let swipeHost = NotchSwipeHost(frame: NSRect(origin: .zero, size: size))
+        swipeHost.notch = notch
+        swipeHost.addSubview(host)
+        NSLayoutConstraint.activate([
+            host.leadingAnchor.constraint(equalTo: swipeHost.leadingAnchor),
+            host.trailingAnchor.constraint(equalTo: swipeHost.trailingAnchor),
+            host.topAnchor.constraint(equalTo: swipeHost.topAnchor),
+            host.bottomAnchor.constraint(equalTo: swipeHost.bottomAnchor)
+        ])
+        swipeHost.onSwipe = { [weak self] dx in
+            MainActor.assumeIsolated { self?.setFace(utility: dx > 0) }
+        }
+        self.hosting = host
+        p.contentView = swipeHost
         panel = p
         reposition()
         p.orderFrontRegardless()
@@ -213,9 +244,11 @@ struct NotchIslandView: View {
     @State private var pop = false
 
     /// Which face of the island is showing. Swipe right on the notch for the
-    /// utility side, left to come back.
+    /// utility side, left to come back. Driven from the panel, since that is
+    /// where the swipe is received.
+    var showUtility: Bool = false
     private enum Face { case player, utility }
-    @State private var face: Face = .player
+    private var face: Face { showUtility ? .utility : .player }
 
     private var snap: EngineSnapshot { model.engine.snapshot }
     /// Only alive when there is a track. With nothing loaded the notch behaves
@@ -243,17 +276,6 @@ struct NotchIslandView: View {
         }
         .frame(width: Self.width, height: Self.height, alignment: .top)
         .clipped()
-        // In the background and zero-sized: an overlay here sat on top of the
-        // chip and ate its hover tracking, which stopped the island expanding.
-        .background {
-            TrackpadSwipe(notch: notch) { dx in
-                withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
-                    face = dx > 0 ? .utility : .player
-                }
-                if dx > 0 { expanded = false }
-            }
-            .frame(width: 0, height: 0)
-        }
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: expanded)
         .animation(.easeInOut(duration: 0.2), value: live)
         .animation(.spring(response: 0.42, dampingFraction: 0.86), value: face)
