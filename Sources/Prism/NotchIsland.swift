@@ -243,29 +243,21 @@ struct NotchIslandView: View {
         }
         .frame(width: Self.width, height: Self.height, alignment: .top)
         .clipped()
-        // Sits over the notch itself, where the fingers are.
-        .overlay(alignment: .top) {
-            TrackpadSwipe { dx in
+        // In the background and zero-sized: an overlay here sat on top of the
+        // chip and ate its hover tracking, which stopped the island expanding.
+        .background {
+            TrackpadSwipe(notch: notch) { dx in
                 withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
                     face = dx > 0 ? .utility : .player
                 }
                 if dx > 0 { expanded = false }
             }
-            .frame(width: notch.width + 150, height: max(notch.height, 20))
+            .frame(width: 0, height: 0)
         }
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: expanded)
         .animation(.easeInOut(duration: 0.2), value: live)
         .animation(.spring(response: 0.42, dampingFraction: 0.86), value: face)
         .preferredColorScheme(.dark)
-        .onHover { inside in
-            guard !inside, face == .utility else { return }
-            hoverTask?.cancel()
-            hoverTask = Task {
-                try? await Task.sleep(for: .milliseconds(900))
-                guard !Task.isCancelled else { return }
-                withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { face = .player }
-            }
-        }
         .onChange(of: snap.track?.videoId) { _, _ in
             pop = true
             Task { @MainActor in

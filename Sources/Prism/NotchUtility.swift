@@ -8,36 +8,67 @@ import UniformTypeIdentifiers
 /// Not a `DragGesture`: a two-finger swipe on a trackpad is not a drag, it is a
 /// scroll with no click, so SwiftUI's drag gestures never see it. It arrives as
 /// `scrollWheel` with precise deltas, which is what this listens for.
+///
+/// And not a view in the hierarchy either. The first version was an `NSView` in
+/// an `.overlay`, which sat on top of the chip and swallowed its mouse tracking
+/// — the island stopped expanding on hover, because `.onHover` underneath never
+/// saw the pointer again. A local event monitor reads the same scrolls without
+/// occupying any space or taking part in hit-testing.
 struct TrackpadSwipe: NSViewRepresentable {
+    let notch: CGSize
     /// Positive is a swipe to the right.
     var onSwipe: (CGFloat) -> Void
 
     func makeNSView(context: Context) -> NSView {
-        let v = SwipeView()
+        let v = MonitorView()
+        v.notch = notch
         v.onSwipe = onSwipe
         return v
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        (view as? SwipeView)?.onSwipe = onSwipe
+        guard let v = view as? MonitorView else { return }
+        v.notch = notch
+        v.onSwipe = onSwipe
     }
 
-    final class SwipeView: NSView {
+    /// Zero-sized and untouchable; it exists only to know which window to watch.
+    final class MonitorView: NSView {
         var onSwipe: ((CGFloat) -> Void)?
+        var notch: CGSize = .zero
+
+        private var monitor: Any?
         private var travel: CGFloat = 0
         private var fired = false
-
-        /// Enough travel to mean it, low enough not to need a shove.
         private let threshold: CGFloat = 26
 
-        override func scrollWheel(with event: NSEvent) {
+        override var isOpaque: Bool { false }
+        /// Never intercept anything. Belt and braces alongside being zero-sized.
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                MainActor.assumeIsolated { self?.consider(event) }
+                return event
+            }
+        }
+
+        private func consider(_ event: NSEvent) {
+            guard let window, event.window === window else { return }
             // `hasPreciseScrollingDeltas` is what separates a trackpad from a
             // mouse wheel. A wheel has no horizontal axis worth reading here and
             // should keep scrolling whatever is underneath.
-            guard event.hasPreciseScrollingDeltas else {
-                super.scrollWheel(with: event)
-                return
-            }
+            guard event.hasPreciseScrollingDeltas else { return }
+
+            // Only over the notch and a little either side, so a swipe further
+            // down the transparent panel does not flip the face.
+            let p = event.locationInWindow
+            let h = window.frame.height, w = window.frame.width
+            guard p.y > h - notch.height - 10,
+                  abs(p.x - w / 2) < notch.width / 2 + 90 else { return }
 
             switch event.phase {
             case .began:
