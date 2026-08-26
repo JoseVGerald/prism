@@ -280,6 +280,15 @@ struct NotchIslandView: View {
         .animation(.easeInOut(duration: 0.2), value: live)
         .animation(.spring(response: 0.42, dampingFraction: 0.86), value: face)
         .preferredColorScheme(.dark)
+        // Coming back from the utility face lands on the *open* island, not the
+        // chip. You swiped back to the music, so the music is what should be
+        // there — collapsing to a sliver would make the return feel like a
+        // dismissal. It still closes on its own once the pointer leaves.
+        .onChange(of: showUtility) { _, nowUtility in
+            hoverTask?.cancel()
+            guard !nowUtility else { return }
+            if live { expanded = true }
+        }
         .onChange(of: snap.track?.videoId) { _, _ in
             pop = true
             Task { @MainActor in
