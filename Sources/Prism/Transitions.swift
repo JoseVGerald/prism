@@ -189,7 +189,15 @@ final class Transitions {
     /// the shadow did not begin at zero.
     private var incomingOffset: Double = 0
     /// True only during the swap, when the player legitimately stops for a
-    /// moment. Outside it, a stopped player means the user pressed pause.
+    /// moment. Outside it, a *paused* player means the user pressed pause.
+    ///
+    /// Only `.paused` — not merely "not playing". `PlaybackState.isPlaying` is
+    /// false for `.ended` too, and the outgoing track reaching its end is the
+    /// single most predictable event in a crossfade: the fade is armed to finish
+    /// exactly there. Treating it as a pause cancelled the mix at t 0.99, every
+    /// time, a heartbeat before the handover — and `cancelFade` then restored
+    /// the main player to full volume on a track YouTube had already advanced
+    /// to 0:00, which is the "it jumps back to the start of the song" bug.
     private var handingOver = false
     /// True from the instant a cut silences the main player until the handover
     /// takes over. Without it the "paused mid-fade" guard below cancels the
@@ -278,7 +286,7 @@ final class Transitions {
             // that follows it was abandoned a moment later.
             if !cutting && !handingOver && id != fadingFrom && id != armedFor {
                 cancelFade("track changed under the fade")
-            } else if !handingOver && !cutting && !snap.playback.isPlaying {
+            } else if !handingOver && !cutting && snap.playback == .paused {
                 cancelFade("paused mid-fade")
             }
             return
