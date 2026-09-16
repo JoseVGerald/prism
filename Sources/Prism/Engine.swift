@@ -203,6 +203,21 @@ final class Engine: NSObject {
 
     /// The player's clock right now, rather than whatever the last 250ms
     /// snapshot said. Crossfade alignment needs better resolution than a tick.
+    /// The id the player is *actually* on, asked directly rather than read from
+    /// the snapshot. Snapshots are pushed about once a second, which is far too
+    /// coarse to decide anything at the seam of a transition.
+    func liveTrackId() async -> String? {
+        await withCheckedContinuation { cont in
+            webView.evaluateJavaScript(
+                "(function(){var p=document.querySelector('#movie_player');"
+                + "var d=p&&p.getVideoData&&p.getVideoData();return d?String(d.video_id||''):'';})()"
+            ) { value, _ in
+                let id = (value as? String) ?? ""
+                cont.resume(returning: id.isEmpty ? nil : id)
+            }
+        }
+    }
+
     func liveTime() async -> Double {
         await withCheckedContinuation { cont in
             webView.evaluateJavaScript(

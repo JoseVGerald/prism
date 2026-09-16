@@ -730,16 +730,32 @@ final class Transitions {
         // either way: the player is muted.
         engine.setPlaybackRate(1)
 
-        // Only skip if YouTube has not already done it for us. The outgoing
-        // track reaches its natural end at exactly the moment the fade finishes,
-        // so it often auto-advances on its own — and calling next() on top of
-        // that jumped a whole track, which is why a fade from "Good Morning"
-        // landed on "Champion" instead of "Stronger".
-        if engine.snapshot.track?.videoId != expected {
+        // Only skip if YouTube has not already done it for us, and *wait* to
+        // find out.
+        //
+        // The outgoing track reaches its natural end at exactly the moment the
+        // fade finishes, so YouTube is usually mid-advance right here. This used
+        // to read `snapshot.track`, which is pushed about once a second — far
+        // too coarse for the seam. It was almost always still naming the
+        // outgoing track, so `next()` was called on top of an advance already in
+        // flight and playback landed two tracks on. That is the whole "it skips
+        // songs in an album" report.
+        //
+        // The wait costs nothing audible: the shadow is the one being heard
+        // throughout, and the main player is muted until the join.
+        var advanced = false
+        for _ in 0..<14 {
+            if Task.isCancelled { return }
+            if await engine.liveTrackId() == expected { advanced = true; break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+
+        if advanced {
+            trace("[FADE_MATH] YouTube advanced on its own; not skipping")
+        } else {
+            trace("[FADE_MATH] no advance after 1.4s; skipping to the armed track")
             engine.noteQueueCause("crossfade handover")
             engine.next()
-        } else {
-            trace("[FADE_MATH] already advanced; not skipping")
         }
 
         var ready = false
