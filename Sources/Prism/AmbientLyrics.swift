@@ -48,7 +48,8 @@ struct AmbientLyricsView: View {
                 case .splitFlap:   SplitFlapLyrics(frame: frame)
                 case .depthTunnel: TunnelLyrics(frame: frame)
                 case .wordRain:    RainLyrics(frame: frame)
-                case .liquidFill:  LiquidLyrics(frame: frame)
+                // The surface resolves Random to a real style before it gets here.
+                case .liquidFill, .random: LiquidLyrics(frame: frame)
                 }
                 if let gap = frame.moment.gap { GapDots(gap: gap, accent: frame.accent) }
             }

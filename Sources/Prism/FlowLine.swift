@@ -133,19 +133,36 @@ final class FlowHostView: UIView {
 
 final class FlowLayer: CALayer {
 
-    private let trail = CAReplicatorLayer()
-    /// One point of the tail; the replicator draws the rest from it.
-    private let bead = CALayer()
+    /// The tail: strokes of the same rim, each shorter, brighter and whiter
+    /// than the one beneath, so together they taper into a comet. Real strokes
+    /// rather than a replicated dot, which at full-screen speeds spread into
+    /// visible beads.
+    private var tails: [CAShapeLayer] = []
     /// The head's glow, which swells on the beat and on a hit.
     private let bloom = CALayer()
 
     private var settings: FlowSettings?
-    /// The rim, sampled evenly by length.
-    private var samples: [CGPoint] = []
+    private var rim: Rim?
     /// The beat heard in the audio, on the media clock.
     private var heard: (period: Double, anchor: CFTimeInterval)?
     private var lastOnset: Date?
     private var built: Built?
+
+    /// (length as a share of the whole tail, width × thickness, whiteness, opacity),
+    /// faintest and longest first.
+    private static let strands: [(length: Double, width: CGFloat, white: Double, alpha: Float)] = [
+        (1.00, 5.0, 0.00, 0.07),
+        (0.90, 3.2, 0.00, 0.14),
+        (0.76, 2.1, 0.10, 0.30),
+        (0.60, 1.5, 0.25, 0.55),
+        (0.42, 1.2, 0.50, 0.80),
+        (0.24, 1.3, 0.80, 0.95),
+        (0.08, 1.7, 1.00, 1.00),
+    ]
+    /// The whole tail, as a share of a lap.
+    static let tailLength = 0.13
+    static let beatsPerLap = 8
+    static let keyframes = 480
 
     /// What the running animation was made from — enough to say where the
     /// head is at any moment, so a rebuild can carry on from there.
@@ -163,17 +180,18 @@ final class FlowLayer: CALayer {
         }
     }
 
-    static let beatsPerLap = 8
-    static let sampleCount = 480
-    static let beadCount = 40
-
     override init() {
         super.init()
-        addSublayer(trail)
-        trail.addSublayer(bead)
+        for s in Self.strands {
+            let l = CAShapeLayer()
+            l.fillColor = nil
+            l.lineCap = .round
+            l.lineJoin = .round
+            l.opacity = s.alpha
+            addSublayer(l)
+            tails.append(l)
+        }
         addSublayer(bloom)
-        trail.instanceCount = Self.beadCount
-        trail.instanceAlphaOffset = -0.95 / Float(Self.beadCount)
     }
     override init(layer: Any) { super.init(layer: layer) }
     required init?(coder: NSCoder) { fatalError() }
@@ -181,23 +199,24 @@ final class FlowLayer: CALayer {
     // MARK: Inputs
 
     func resize(to bounds: CGRect) {
-        guard frame != bounds || samples.isEmpty else { return }
-        withoutActions {
-            frame = bounds
-            trail.frame = bounds
-        }
-        resample()
+        guard frame != bounds || rim == nil else { return }
+        withoutActions { frame = bounds }
+        reshape()
         rebuild()
     }
 
     func apply(_ new: FlowSettings) {
         let old = settings
         settings = new
+        guard let old else { restyle(); reshape(); rebuild(); return }
         guard old != new else { return }
-        let recolour = old.map { $0.accent != new.accent || $0.thickness != new.thickness } ?? true
-        if recolour { restyle() }
-        if old?.inset != new.inset || old?.corner != new.corner { resample() }
-        rebuild()
+        // Colour alone changes every frame of a song change, as the palette
+        // blends; that must only recolour, never rebuild the motion.
+        if old.accent != new.accent || old.thickness != new.thickness { restyle() }
+        let reshaped = old.inset != new.inset || old.corner != new.corner
+        if reshaped { reshape() }
+        if reshaped || old.playing != new.playing || old.depth != new.depth
+            || old.tempo != new.tempo || old.animating != new.animating { rebuild() }
     }
 
     /// Called at 20 Hz with what the audio is doing. Rebuilds only when the
@@ -213,9 +232,9 @@ final class FlowLayer: CALayer {
             case (nil, nil): return false
             case let (a?, b?):
                 guard abs(b.period / a.period - 1) < 0.01 else { return true }
-                // How far the heard beat sits from the grid we are drawing.
+                // How far the heard beat sits from the grid being drawn.
                 let k = ((b.anchor - a.anchor) / a.period).rounded()
-                return abs(b.anchor - (a.anchor + k * a.period)) > 0.03
+                return abs(b.anchor - (a.anchor + k * a.period)) > 0.04
             default: return true
             }
         }()
@@ -232,15 +251,21 @@ final class FlowLayer: CALayer {
 
     // MARK: Building
 
-    private func resample() {
+    private func reshape() {
         guard let s = settings, bounds.width > s.inset * 2 + 4,
-              bounds.height > s.inset * 2 + 4 else { samples = []; return }
-        let rect = bounds.insetBy(dx: s.inset, dy: s.inset)
-        let path = Path(roundedRect: rect, cornerRadius: s.corner, style: .continuous)
-        samples = (0..<Self.sampleCount).map { i in
-            let f = Double(i) / Double(Self.sampleCount)
-            return f == 0 ? (path.trimmedPath(from: 0, to: 0.0001).currentPoint ?? .zero)
-                          : (path.trimmedPath(from: 0, to: f).currentPoint ?? .zero)
+              bounds.height > s.inset * 2 + 4 else { rim = nil; return }
+        let r = Rim(rect: bounds.insetBy(dx: s.inset, dy: s.inset), corner: s.corner)
+        rim = r
+        // Three laps end to end. The head's position within the middle
+        // stretch never needs to wrap, so a tail crossing the seam where the
+        // loop starts is still one unbroken stroke.
+        let path = r.path(laps: 3)
+        withoutActions {
+            for l in tails {
+                l.frame = bounds
+                l.path = path
+                l.contentsScale = contentsScale
+            }
         }
     }
 
@@ -248,35 +273,30 @@ final class FlowLayer: CALayer {
         guard let s = settings else { return }
         let scale = contentsScale
         withoutActions {
-            let beadSize = s.thickness * 7
-            bead.bounds = CGRect(x: 0, y: 0, width: beadSize, height: beadSize)
-            bead.contents = Self.glow(diameter: beadSize, scale: scale,
-                                      core: (1, 1, 1), edge: (1, 1, 1), coreStop: 0.22)
-            bead.contentsScale = scale
+            for (l, strand) in zip(tails, Self.strands) {
+                let w = strand.white
+                l.lineWidth = s.thickness * strand.width
+                l.strokeColor = CGColor(red: s.accent.r + (1 - s.accent.r) * w,
+                                        green: s.accent.g + (1 - s.accent.g) * w,
+                                        blue: s.accent.b + (1 - s.accent.b) * w, alpha: 1)
+            }
             let bloomSize = s.thickness * 16
             bloom.bounds = CGRect(x: 0, y: 0, width: bloomSize, height: bloomSize)
-            bloom.contents = Self.glow(diameter: bloomSize, scale: scale, core: (1, 1, 1),
-                                       edge: (s.accent.r, s.accent.g, s.accent.b), coreStop: 0.1)
+            bloom.contents = Self.glow(diameter: bloomSize, scale: scale,
+                                       edge: (s.accent.r, s.accent.g, s.accent.b))
             bloom.contentsScale = scale
-            // Head white, tail the artwork's accent: each copy's colour steps
-            // from white towards it, multiplying the white bead.
-            let n = Float(Self.beadCount)
-            trail.instanceColor = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
-            trail.instanceRedOffset = Float(s.accent.r - 1) / n * 1.4
-            trail.instanceGreenOffset = Float(s.accent.g - 1) / n * 1.4
-            trail.instanceBlueOffset = Float(s.accent.b - 1) / n * 1.4
         }
     }
 
     private func rebuild() {
-        guard let s = settings, !samples.isEmpty else { return }
+        guard let s = settings, let rim else { return }
         let now = CACurrentMediaTime()
         guard s.animating else {
             // Hold the head where it is; the next build carries on from there.
             if let b = built {
                 built = Built(start: b.head(at: now), begin: now, lap: b.lap, surge: 0)
             }
-            bead.removeAllAnimations()
+            tails.forEach { $0.removeAllAnimations() }
             bloom.removeAllAnimations()
             return
         }
@@ -302,59 +322,58 @@ final class FlowLayer: CALayer {
         var start = head - Self.distance(atTime: (now - begin) / lap, surge: surge)
         start = start.truncatingRemainder(dividingBy: 1)
         if start < 0 { start += 1 }
-        // Whole laps earlier: the same motion from now on, but the tail's
-        // delayed copies also land inside the animation instead of before it.
+        // Whole laps earlier: the same motion from now on.
         begin -= 2 * lap
-
         built = Built(start: start, begin: begin, lap: lap, surge: surge)
+
+        // One lap of keyframes, evenly spaced in time: where the head is, and
+        // how long the tail is — it stretches with the surge, like a streak.
+        let n = Self.keyframes
+        var heads: [Double] = [], stretch: [Double] = [], points: [NSValue] = []
+        heads.reserveCapacity(n + 1); stretch.reserveCapacity(n + 1); points.reserveCapacity(n + 1)
+        for j in 0...n {
+            let f = Double(j) / Double(n)
+            let u = start + Self.distance(atTime: f, surge: surge)
+            heads.append(u)
+            let tau = (f * Double(Self.beatsPerLap)).truncatingRemainder(dividingBy: 1)
+            stretch.append(1 + (surge > 0 ? 0.45 * s.depth * (Self.swell(tau) - 0.375) : 0))
+            #if canImport(AppKit)
+            points.append(NSValue(point: rim.point(at: u)))
+            #else
+            points.append(NSValue(cgPoint: rim.point(at: u)))
+            #endif
+        }
+
+        let beginLocal = bloom.convertTime(begin, from: nil)
+        func keyed(_ path: String, _ values: [Any]) -> CAKeyframeAnimation {
+            let a = CAKeyframeAnimation(keyPath: path)
+            a.values = values
+            a.calculationMode = .linear
+            a.duration = lap
+            a.repeatCount = .infinity
+            a.beginTime = beginLocal
+            a.isRemovedOnCompletion = false
+            return a
+        }
 
         withoutActions {
             opacity = s.playing ? 1 : 0.4
-            bead.position = samples[Int(start * Double(samples.count)) % samples.count]
-            bloom.position = bead.position
-            // Trail length: an eighth of a lap behind the head.
-            trail.instanceDelay = lap * 0.12 / Double(Self.beadCount)
+            bloom.position = rim.point(at: start)
         }
-
-        let move = positionAnimation(start: start, surge: surge, lap: lap, begin: begin)
-        bead.add(move, forKey: "flow")
-        bloom.add(move, forKey: "flow")
-        bloom.add(pulseAnimation(beat: folded?.period, depth: s.depth, begin: begin),
+        let ends = heads.map { NSNumber(value: (1 + $0) / 3) }
+        for (l, strand) in zip(tails, Self.strands) {
+            let length = Self.tailLength * strand.length
+            let starts = zip(heads, stretch).map { NSNumber(value: (1 + $0 - length * $1) / 3) }
+            l.add(keyed("strokeEnd", ends), forKey: "end")
+            l.add(keyed("strokeStart", starts), forKey: "start")
+        }
+        bloom.add(keyed("position", points), forKey: "flow")
+        bloom.add(pulseAnimation(beat: folded?.period, depth: s.depth, begin: beginLocal),
                   forKey: "pulse")
     }
 
-    /// The head's path round the rim, one lap. With a beat, each eighth of
-    /// the lap is one beat whose keyframes bunch up early — the surge.
-    private func positionAnimation(start: Double, surge: Double, lap: Double,
-                                   begin: CFTimeInterval) -> CAKeyframeAnimation {
-        let n = samples.count
-        var values: [NSValue] = []
-        var times: [NSNumber] = []
-        values.reserveCapacity(n + 1)
-        times.reserveCapacity(n + 1)
-        let offset = Int((start * Double(n)).rounded())
-        for j in 0...n {
-            let p = samples[(offset + j) % n]
-            #if canImport(AppKit)
-            values.append(NSValue(point: p))
-            #else
-            values.append(NSValue(cgPoint: p))
-            #endif
-            times.append(NSNumber(value: Self.time(atDistance: Double(j) / Double(n), surge: surge)))
-        }
-        let a = CAKeyframeAnimation(keyPath: "position")
-        a.values = values
-        a.keyTimes = times
-        a.calculationMode = .linear
-        a.duration = lap
-        a.repeatCount = .infinity
-        a.beginTime = bead.convertTime(begin, from: nil)
-        a.isRemovedOnCompletion = false
-        return a
-    }
-
-    /// The bloom swells on each beat and decays over it — a struck note. With
-    /// no beat, it breathes.
+    /// The bloom swells on each beat and decays over it — a struck note, sharp
+    /// on purpose: this is what says "beat". With no beat, it breathes.
     private func pulseAnimation(beat: Double?, depth: Double,
                                 begin: CFTimeInterval) -> CAAnimationGroup {
         let steps = 12
@@ -372,7 +391,7 @@ final class FlowLayer: CALayer {
         group.animations = [fade, grow]
         group.duration = beat ?? 7.4
         group.repeatCount = .infinity
-        group.beginTime = bloom.convertTime(beat == nil ? CACurrentMediaTime() : begin, from: nil)
+        group.beginTime = breathing ? bloom.convertTime(CACurrentMediaTime(), from: nil) : begin
         group.isRemovedOnCompletion = false
         return group
     }
@@ -399,13 +418,27 @@ final class FlowLayer: CALayer {
         return p
     }
 
+    /// Where in a beat the surge peaks: just after it lands.
+    static let surgePeak = 0.06
+
+    /// The surge's shape over one beat, `τ` 0…1: a smooth rise and fall with
+    /// no corners anywhere, so the speed never jumps. Averages 0.375.
+    static func swell(_ tau: Double) -> Double {
+        let c = 0.5 + 0.5 * cos(2 * Double.pi * (tau - surgePeak))
+        return c * c
+    }
+
     /// How far round a beat the head has got, `τ` of the way through it.
     ///
-    /// Speed is `1 + surge·(env − 1/3.2)` with `env = (1 − τ)^2.2`, the same
-    /// struck note as the ring's beat. That averages exactly 1 over a beat, so
-    /// the average pace is the tempo's, and this is its integral.
+    /// Speed is `1 + surge·(swell − 0.375)`, which averages exactly 1 over a
+    /// beat — so the average pace is the tempo's — and this is its integral:
+    /// `swell − 0.375 = ½cos x + ⅛cos 2x` with `x = 2π(τ − peak)`.
     static func withinBeat(_ tau: Double, surge: Double) -> Double {
-        tau + surge * ((1 - pow(1 - tau, 3.2)) / 3.2 - tau / 3.2)
+        func w(_ t: Double) -> Double {
+            let x = 2 * Double.pi * (t - surgePeak)
+            return 0.5 * sin(x) / (2 * .pi) + 0.125 * sin(2 * x) / (4 * .pi)
+        }
+        return tau + surge * (w(tau) - w(0))
     }
 
     /// Fraction of the lap covered after `f` of its time.
@@ -417,22 +450,6 @@ final class FlowLayer: CALayer {
         return (b + withinBeat(x - b, surge: surge)) / beats
     }
 
-    /// Fraction of the lap's time taken to cover `d` of it — the inverse, by
-    /// bisection, since the integral has no closed-form inverse.
-    static func time(atDistance d: Double, surge: Double) -> Double {
-        guard surge > 0 else { return d }
-        let beats = Double(beatsPerLap)
-        let x = min(max(d, 0), 1) * beats
-        let b = min(x.rounded(.down), beats - 1)
-        let target = x - b
-        var lo = 0.0, hi = 1.0
-        for _ in 0..<24 {
-            let mid = (lo + hi) / 2
-            if withinBeat(mid, surge: surge) < target { lo = mid } else { hi = mid }
-        }
-        return (b + (lo + hi) / 2) / beats
-    }
-
     // MARK: Drawing
 
     private func withoutActions(_ body: () -> Void) {
@@ -442,24 +459,77 @@ final class FlowLayer: CALayer {
         CATransaction.commit()
     }
 
-    /// A round glow: solid colour at the centre falling off to nothing.
+    /// A round glow: white at the centre, through the colour, to nothing.
     static func glow(diameter: CGFloat, scale: CGFloat,
-                     core: (Double, Double, Double), edge: (Double, Double, Double),
-                     coreStop: CGFloat) -> CGImage? {
+                     edge: (Double, Double, Double)) -> CGImage? {
         let px = max(Int(diameter * scale), 4)
-        guard let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8,
-                                  bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: space,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         else { return nil }
-        let colours = [CGColor(red: core.0, green: core.1, blue: core.2, alpha: 1),
+        let colours = [CGColor(red: 1, green: 1, blue: 1, alpha: 1),
                        CGColor(red: edge.0, green: edge.1, blue: edge.2, alpha: 0.55),
                        CGColor(red: edge.0, green: edge.1, blue: edge.2, alpha: 0)] as CFArray
-        guard let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
-                                        colors: colours, locations: [0, coreStop, 1])
-        else { return nil }
+        guard let gradient = CGGradient(colorsSpace: space, colors: colours,
+                                        locations: [0, 0.1, 1]) else { return nil }
         let c = CGPoint(x: CGFloat(px) / 2, y: CGFloat(px) / 2)
         ctx.drawRadialGradient(gradient, startCenter: c, startRadius: 0,
                                endCenter: c, endRadius: CGFloat(px) / 2, options: [])
         return ctx.makeImage()
+    }
+}
+
+/// The rounded rectangle the light runs round, measured by length.
+///
+/// Built by hand rather than taken from `Path(roundedRect:)` so its direction
+/// is known — clockwise on screen, the same way the ring's colour flows — and
+/// so a point at any share of the way round is exact arithmetic instead of a
+/// path trimmed from the start every time.
+struct Rim {
+    let rect: CGRect
+    let corner: CGFloat
+
+    init(rect: CGRect, corner: CGFloat) {
+        self.rect = rect
+        self.corner = max(0, min(corner, min(rect.width, rect.height) / 2))
+    }
+
+    private var straightX: CGFloat { rect.width - 2 * corner }
+    private var straightY: CGFloat { rect.height - 2 * corner }
+    private var quarter: CGFloat { .pi * corner / 2 }
+    var length: CGFloat { 2 * straightX + 2 * straightY + 4 * quarter }
+
+    /// Clockwise from the top edge's left end, in top-left-origin coordinates.
+    func path(laps: Int) -> CGPath {
+        let p = CGMutablePath()
+        let (x0, y0, x1, y1) = (rect.minX, rect.minY, rect.maxX, rect.maxY)
+        p.move(to: CGPoint(x: x0 + corner, y: y0))
+        for _ in 0..<laps {
+            p.addArc(tangent1End: CGPoint(x: x1, y: y0), tangent2End: CGPoint(x: x1, y: y1), radius: corner)
+            p.addArc(tangent1End: CGPoint(x: x1, y: y1), tangent2End: CGPoint(x: x0, y: y1), radius: corner)
+            p.addArc(tangent1End: CGPoint(x: x0, y: y1), tangent2End: CGPoint(x: x0, y: y0), radius: corner)
+            p.addArc(tangent1End: CGPoint(x: x0, y: y0), tangent2End: CGPoint(x: x1, y: y0), radius: corner)
+            p.addLine(to: CGPoint(x: x0 + corner, y: y0))
+        }
+        return p
+    }
+
+    /// The point `u` of the way round (any real number; whole laps wrap).
+    func point(at u: Double) -> CGPoint {
+        var d = CGFloat(u - u.rounded(.down)) * length
+        let (x0, y0, x1, y1, c) = (rect.minX, rect.minY, rect.maxX, rect.maxY, corner)
+        func arc(_ cx: CGFloat, _ cy: CGFloat, from a: CGFloat, _ t: CGFloat) -> CGPoint {
+            let angle = a + t * .pi / 2
+            return CGPoint(x: cx + c * cos(angle), y: cy + c * sin(angle))
+        }
+        if d <= straightX { return CGPoint(x: x0 + c + d, y: y0) }; d -= straightX
+        if d <= quarter { return arc(x1 - c, y0 + c, from: -.pi / 2, d / max(quarter, 1e-6)) }; d -= quarter
+        if d <= straightY { return CGPoint(x: x1, y: y0 + c + d) }; d -= straightY
+        if d <= quarter { return arc(x1 - c, y1 - c, from: 0, d / max(quarter, 1e-6)) }; d -= quarter
+        if d <= straightX { return CGPoint(x: x1 - c - d, y: y1) }; d -= straightX
+        if d <= quarter { return arc(x0 + c, y1 - c, from: .pi / 2, d / max(quarter, 1e-6)) }; d -= quarter
+        if d <= straightY { return CGPoint(x: x0, y: y1 - c - d) }; d -= straightY
+        return arc(x0 + c, y0 + c, from: .pi, min(d / max(quarter, 1e-6), 1))
     }
 }

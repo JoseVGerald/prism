@@ -65,6 +65,14 @@ enum LyricsService {
         return fallback
     }
 
+    /// Looks a coming track up ahead of time. LRCLIB only, and cached only on
+    /// a hit: the YouTube fallback reads the page, which is still on the
+    /// current song, so running it early could file the wrong lyrics.
+    static func prefetch(_ track: Track) async {
+        guard cache[track.videoId] == nil, let synced = await lrclib(track) else { return }
+        cache[track.videoId] = synced
+    }
+
     // MARK: LRCLIB
 
     private struct LRCResponse: Decodable {

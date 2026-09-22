@@ -130,10 +130,12 @@ final class Transitions {
     }
 
     private(set) var fading = false
-    /// 0…1 through the blend while one runs, held at 1 through the handover,
-    /// nil otherwise. Quantised to hundredths so the locked-mode transition can
-    /// follow the audio without invalidating a view on every 40ms tick.
-    private(set) var fadeProgress: Double?
+    /// When the running blend began and how long it lasts, nil otherwise.
+    /// Published once per fade rather than as a progress value: locked mode
+    /// works the position out from the clock every frame, so its picture moves
+    /// smoothly with the audio, and no view is invalidated by the 40ms loop.
+    /// Past its length it reads as 1 — held through the handover.
+    private(set) var fadeClock: (began: Date, length: Double)?
     /// Why the last transition was not a crossfade, for the UI to surface.
     private(set) var lastProblem: String?
 
@@ -569,13 +571,12 @@ final class Transitions {
         // ended before the ramp finished. Reading the clock keeps the fade the
         // length it claims to be however slow the bridge is.
         let began = Date()
+        fadeClock = (began, fade)
         var lastTraced = -1.0
         while true {
             if Task.isCancelled { return }
             let elapsed = Date().timeIntervalSince(began)
             let t = min(elapsed / fade, 1)
-            let shown = (t * 100).rounded() / 100
-            if fadeProgress != shown { fadeProgress = shown }
 
             // Ducked equal-power. Plain equal-power parks both songs at -3 dB
             // through the whole middle of the blend, so for several seconds
@@ -955,7 +956,7 @@ final class Transitions {
         watchdog = nil
         handingOver = false
         fading = false
-        fadeProgress = nil
+        fadeClock = nil
         armedFor = nil
         fadingFrom = nil
         restoreVolume = nil

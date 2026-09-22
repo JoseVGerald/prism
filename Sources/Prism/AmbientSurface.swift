@@ -22,6 +22,9 @@ struct AmbientSurface: View {
     @State private var hoveringArt = false
     @State private var chromeVisible = true
     @State private var idleTask: Task<Void, Never>?
+    @State private var latch = AmbientTransition.Latch()
+    /// This song's style when the setting is Random, picked as the song starts.
+    @State private var randomStyle: AmbientSettings.LyricStyle = .prism
 
     private var snap: EngineSnapshot { model.engine.snapshot }
     private var track: Track? { snap.track }
@@ -32,15 +35,17 @@ struct AmbientSurface: View {
     /// paused and the surface redraws only when something it reads changes,
     /// rather than rebuilding every view twenty times a second for nothing.
     private var nearHandover: Bool {
-        if model.transitions.fadeProgress != nil { return true }
+        if model.transitions.fadeClock != nil || latch.holding { return true }
         let d = snap.duration
         return model.nextEntry != nil && d > 0
             && d - snap.currentTime < AmbientTransition.fallbackWindow + 1
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: !nearHandover)) { tl in
-            let raw = AmbientTransition.progress(model: model, at: tl.date)
+        // At the display's pace while a hand-over runs — at 20fps the cards
+        // visibly stepped — and paused the rest of the time.
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !nearHandover)) { tl in
+            let raw = AmbientTransition.progress(model: model, at: tl.date, latch: latch)
             let e = AmbientTransition.smoothstep(0, 1, raw ?? 0)
             ZStack {
                 Color.black
@@ -88,54 +93,85 @@ struct AmbientSurface: View {
         }
         .animation(.easeInOut(duration: 0.45), value: showingLyrics)
         .animation(.easeOut(duration: 0.3), value: chromeVisible)
+        .onChange(of: track?.videoId, initial: true) { pickRandomStyle() }
+    }
+
+    /// A different drawn style from the last song's, so Random never repeats
+    /// itself back to back.
+    private func pickRandomStyle() {
+        let others = AmbientSettings.LyricStyle.drawn.filter { $0 != randomStyle }
+        randomStyle = others.randomElement() ?? .prism
+    }
+
+    private var lyricStyle: AmbientSettings.LyricStyle {
+        model.ambient.lyricStyle == .random ? randomStyle : model.ambient.lyricStyle
     }
 
     // MARK: Cover face
+
+    /// One song's card. Keyed by video id, so when the incoming song becomes
+    /// the current one it is the *same view* — its artwork already loaded, its
+    /// layout already in place — rather than a new card that reloads the art
+    /// and gains a progress bar as the song changes.
+    private struct Slot: Identifiable {
+        let id: String
+        let incoming: Bool
+        let title: String
+        let artist: String
+        let art: String?
+        let palette: ArtPalette
+    }
+
+    private var slots: [Slot] {
+        var out = [Slot(id: track?.videoId ?? "none", incoming: false,
+                        title: track?.title ?? "Nothing playing", artist: track?.artist ?? "",
+                        art: ArtworkURL.large(track?.artworkURL), palette: model.palette)]
+        if let next = model.nextEntry, next.videoId != track?.videoId {
+            out.append(Slot(id: next.videoId, incoming: true, title: next.title,
+                            artist: next.artist, art: ArtworkURL.large(next.artworkURL),
+                            palette: model.nextPalette))
+        }
+        return out
+    }
 
     private func coverFace(progress e: Double) -> some View {
         GeometryReader { geo in
             let w = geo.size.width
             ZStack {
-                // The outgoing song shrinks, slides left and fades...
-                card(track: track, showsProgress: true, interactive: e < 0.05)
-                    .scaleEffect(1 - 0.55 * e)
-                    .offset(x: -w * 0.28 * e)
-                    .opacity(1 - AmbientTransition.smoothstep(0.35, 1, e))
-
-                // ...while the next one grows in from the right to exactly where
-                // the cover sits, so when the track actually changes the layout
-                // is already in place and nothing jumps.
-                if e > 0, let next = model.nextEntry {
-                    card(entry: next)
-                        .scaleEffect(0.45 + 0.55 * e)
-                        .offset(x: w * 0.3 * (1 - e))
-                        .opacity(AmbientTransition.smoothstep(0, 0.6, e))
-                        .allowsHitTesting(false)
+                ForEach(slots) { slot in
+                    // The outgoing song shrinks, slides left and fades, while the
+                    // next grows in from the right to exactly where the cover
+                    // sits. At 1 the incoming card is the cover, pixel for pixel,
+                    // so the moment the song changes nothing moves. It is also
+                    // there unseen before the hand-over, which loads its art.
+                    card(slot, interactive: !slot.incoming && e < 0.05)
+                        .scaleEffect(slot.incoming ? 0.45 + 0.55 * e : 1 - 0.55 * e)
+                        .offset(x: slot.incoming ? w * 0.3 * (1 - e) : -w * 0.28 * e)
+                        .opacity(slot.incoming ? AmbientTransition.smoothstep(0, 0.6, e)
+                                               : 1 - AmbientTransition.smoothstep(0.35, 1, e))
+                        .allowsHitTesting(!slot.incoming)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
     }
 
-    private func card(track: Track?, showsProgress: Bool, interactive: Bool) -> some View {
+    private func card(_ slot: Slot, interactive: Bool) -> some View {
         VStack(spacing: 26) {
-            art(track?.artworkURL, interactive: interactive)
-            titles(track?.title ?? "Nothing playing", track?.artist ?? "")
-            if showsProgress, let track, snap.duration > 0 {
-                progress.frame(width: 440).id(track.videoId)
+            art(slot.art, palette: slot.palette, interactive: interactive)
+            titles(slot.title, slot.artist)
+            // The same height on both cards, so the incoming one's layout
+            // already matches when the progress bar fades in on it.
+            ZStack {
+                if !slot.incoming, track != nil, snap.duration > 0 {
+                    progress.transition(.opacity)
+                }
             }
+            .frame(width: 440, height: 40)
+            .animation(.easeOut(duration: 0.5), value: slot.incoming)
         }
         .foregroundStyle(.white)
         .shadow(color: .black.opacity(0.5), radius: 12)
-    }
-
-    private func card(entry: QueueEntry) -> some View {
-        VStack(spacing: 26) {
-            Artwork(url: entry.artworkURL, corner: 16).frame(width: 260, height: 260)
-                .shadow(color: .black.opacity(0.6), radius: 40, y: 18)
-            titles(entry.title, entry.artist)
-        }
-        .foregroundStyle(.white)
     }
 
     private func titles(_ title: String, _ artist: String) -> some View {
@@ -152,14 +188,14 @@ struct AmbientSurface: View {
         .padding(.horizontal, 60)
     }
 
-    private func art(_ url: String?, interactive: Bool) -> some View {
+    private func art(_ url: String?, palette: ArtPalette, interactive: Bool) -> some View {
         Artwork(url: url, corner: 16)
             .frame(width: 260, height: 260)
             .background {
                 Circle()
                     .fill(RadialGradient(
-                        colors: [model.palette.accent.opacity(0.42),
-                                 model.palette.mid.opacity(0.18), .clear],
+                        colors: [palette.accent.opacity(0.42),
+                                 palette.mid.opacity(0.18), .clear],
                         center: .center, startRadius: 60, endRadius: 300))
                     .frame(width: 620, height: 620)
                     .allowsHitTesting(false)
@@ -219,7 +255,12 @@ struct AmbientSurface: View {
 
     private var lyricsFace: some View {
         ZStack {
-            AmbientLyricsView(model: model, style: model.ambient.lyricStyle)
+            // Keyed by song, so as one song gives way to the next its lyrics
+            // fade out while the new song's fade in, rather than cutting.
+            AmbientLyricsView(model: model, style: lyricStyle)
+                .id(track?.videoId)
+                .transition(.opacity)
+                .animation(.easeInOut(duration: 0.8), value: track?.videoId)
                 .padding(.horizontal, 80)
                 .contentShape(Rectangle())
                 // Clicking the lyrics goes back to the cover.
@@ -259,12 +300,19 @@ struct AmbientSurface: View {
         .transition(.opacity)
     }
 
-    @ViewBuilder
+    /// The blurred covers behind the lyrics, keyed by image: the next song's,
+    /// faded up over the hand-over, is the very layer that stays once the song
+    /// changes. Two positional layers used to swap contents at that moment,
+    /// flashing the old cover back for a beat.
     private func backdrop(progress e: Double) -> some View {
-        ZStack {
-            BlurredArtBackdrop(url: track?.artworkURL)
-            if e > 0, let next = model.nextEntry {
-                BlurredArtBackdrop(url: next.artworkURL).opacity(e)
+        var layers = [(url: ArtworkURL.large(track?.artworkURL) ?? "none", opacity: 1.0)]
+        if e > 0, let next = ArtworkURL.large(model.nextEntry?.artworkURL), next != layers[0].url {
+            layers.append((next, e))
+        }
+        return ZStack {
+            ForEach(layers, id: \.url) { layer in
+                BlurredArtBackdrop(url: layer.url == "none" ? nil : layer.url)
+                    .opacity(layer.opacity)
             }
         }
         .allowsHitTesting(false)

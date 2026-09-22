@@ -13,6 +13,31 @@ func timeString(_ seconds: Double) -> String {
 // MARK: - Artwork
 
 /// Remote artwork with a graceful placeholder and a crossfade on change.
+/// YouTube serves one image at many sizes, named by a `=w120-h120…` suffix.
+/// The queue hands out 120px thumbnails and the player 544px ones, so the same
+/// cover arrives under two URLs.
+enum ArtworkURL {
+    /// The same image whatever size was asked for — for "is this the same
+    /// cover?" questions.
+    static func key(_ url: String?) -> String? {
+        guard let url else { return nil }
+        guard let r = url.range(of: #"=w\d+-h\d+"#, options: .regularExpression) else { return url }
+        return String(url[..<r.lowerBound])
+    }
+
+    /// The 544px square the player uses, so a queue thumbnail and the playing
+    /// track's art are one URL — and one already-loaded image — at the swap.
+    /// Only square sizes are rewritten; see `upscale` in the bridge for why a
+    /// banner must never be asked for as a square.
+    static func large(_ url: String?) -> String? {
+        guard let url, let r = url.range(of: #"=w(\d+)-h(\d+)"#, options: .regularExpression)
+        else { return url }
+        let dims = url[r].dropFirst().split(separator: "-").map { $0.dropFirst() }
+        guard dims.count == 2, dims[0] == dims[1] else { return url }
+        return url.replacingCharacters(in: r, with: "=w544-h544")
+    }
+}
+
 struct Artwork: View {
     let url: String?
     var corner: CGFloat = 8

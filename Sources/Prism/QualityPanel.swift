@@ -117,7 +117,9 @@ struct SettingsPanel: View {
                     .labelsHidden()
                     .fixedSize()
                 }
-                Text("How lyrics move in locked mode — click the cover there to show them.")
+                Text(ambient.lyricStyle == .random
+                     ? "A different style for each song in locked mode — click the cover there to show them."
+                     : "How lyrics move in locked mode — click the cover there to show them.")
                     .font(.caption2).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

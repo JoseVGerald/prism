@@ -33,6 +33,8 @@ final class AmbientSettings {
     /// How lyrics are drawn in locked mode.
     enum LyricStyle: String, CaseIterable, Identifiable {
         case prism, splitFlap, depthTunnel, wordRain, liquidFill
+        /// A different one of the others for each song.
+        case random
         var id: String { rawValue }
         var label: String {
             switch self {
@@ -41,8 +43,11 @@ final class AmbientSettings {
             case .depthTunnel: return "Depth tunnel"
             case .wordRain:    return "Word rain"
             case .liquidFill:  return "Liquid fill"
+            case .random:      return "Random"
             }
         }
+        /// The styles that actually draw — everything but `.random`.
+        static let drawn: [LyricStyle] = [.prism, .splitFlap, .depthTunnel, .wordRain, .liquidFill]
     }
 
     private enum Key {

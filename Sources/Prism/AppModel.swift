@@ -243,6 +243,7 @@ final class AppModel {
         }
         if lyricsMode || ambientLyricsWanted { loadLyrics(for: snap.track) }
         refreshNextPalette()
+        prefetchNextLyrics()
     }
 
     // MARK: Locked-mode support
@@ -251,7 +252,7 @@ final class AppModel {
     /// Playing's own lyrics toggle is on, which locked mode has nothing to do
     /// with — so it asks for them in its own right.
     var ambientLyricsWanted = false {
-        didSet { if ambientLyricsWanted { ensureLyrics() } }
+        didSet { if ambientLyricsWanted { ensureLyrics(); prefetchNextLyrics() } }
     }
 
     func ensureLyrics() { loadLyrics(for: engine.snapshot.track) }
@@ -269,6 +270,27 @@ final class AppModel {
     private(set) var nextPalette: ArtPalette = .fallback
     private var nextPaletteFor: String?
     private var nextPaletteTask: Task<Void, Never>?
+
+    /// Fetches the next song's lyrics while this one plays, so locked mode's
+    /// lyrics are there the moment the song changes instead of loading then.
+    private var lyricsPrefetchedFor: String?
+    private func prefetchNextLyrics() {
+        guard ambientLyricsWanted, let next = nextEntry,
+              next.videoId != lyricsPrefetchedFor else { return }
+        lyricsPrefetchedFor = next.videoId
+        let track = Track(videoId: next.videoId, title: next.title, artist: next.artist,
+                          durationText: next.durationText,
+                          durationSeconds: next.durationText.flatMap(Self.seconds),
+                          artworkURL: next.artworkURL)
+        Task { await LyricsService.prefetch(track) }
+    }
+
+    /// "3:45" or "1:02:03" in seconds.
+    private static func seconds(_ text: String) -> Double? {
+        let parts = text.split(separator: ":").compactMap { Double($0) }
+        guard !parts.isEmpty, parts.count <= 3 else { return nil }
+        return parts.reduce(0) { $0 * 60 + $1 }
+    }
 
     private func refreshNextPalette() {
         let url = nextEntry?.artworkURL
@@ -575,7 +597,10 @@ final class AppModel {
         // blending towards, so its colours are known. Taking them immediately
         // stops the rim flashing back to the *outgoing* song's colours for the
         // ~0.7s the fetch-and-animate would otherwise take.
-        if let artworkURL, artworkURL == nextPaletteFor {
+        // Compared by image, not URL: the queue's thumbnail and the player's
+        // art are the same cover at different sizes, and comparing the URLs
+        // never matched — the rim flashed back to the old song at every swap.
+        if let artworkURL, ArtworkURL.key(artworkURL) == ArtworkURL.key(nextPaletteFor) {
             paletteTask?.cancel()
             palette = nextPalette
             return

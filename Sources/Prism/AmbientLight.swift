@@ -127,13 +127,12 @@ struct AmbientLight: View {
     private func ring(at t: TimeInterval) -> some View {
         let live = drift ? nil : audio?.bands
         // A full turn every 28s while playing, slowed right down when idle.
+        // The colour goes round at one steady pace: a lap every 28s while
+        // playing, slowed right down when idle. Nothing the music does changes
+        // it — the treble used to lean it back and forth.
         let period: Double = drift ? 60 : 28
-        // Treble leans the colour round the loop rather than speeding the
-        // rotation: the angle is computed from absolute time with no memory, so
-        // changing the *rate* would make it jump. An offset driven by a smoothed
-        // value moves just as visibly with no discontinuity.
-        let lean = (live?.treble ?? 0) * 28
-        let angle = Angle.degrees((t / period * 360 + lean).truncatingRemainder(dividingBy: 360))
+        let phase = (t / period).truncatingRemainder(dividingBy: 1)
+        let cycle = colours.dropLast().map(\.prismRGBA)
         let strength: Double = {
             guard let live else { return (drift ? 0.4 : glow) * breath(at: t) }
             // Bass carries the brightness. A floor keeps the line alive through
@@ -149,9 +148,9 @@ struct AmbientLight: View {
             let rect = CGRect(origin: .zero, size: size).insetBy(dx: inset, dy: inset)
             let path = Path(roundedRect: rect, cornerRadius: corner, style: .continuous)
             let shading = GraphicsContext.Shading.conicGradient(
-                Gradient(colors: colours),
+                Self.evenGradient(cycle, phase: phase, in: rect),
                 center: CGPoint(x: size.width / 2, y: size.height / 2),
-                angle: angle)
+                angle: .zero)
 
             // Widest and softest first, crisp line last. Each pass takes its own
             // copy of the context: a filter added to `ctx` is not removable, so
@@ -189,6 +188,52 @@ struct AmbientLight: View {
                 core.stroke(comet, with: .color(.white), lineWidth: thickness * 1.2)
             }
         }
+    }
+}
+
+extension AmbientLight {
+
+    /// A conic gradient whose colours travel along the rim at constant speed.
+    ///
+    /// Turning a conic gradient turns it at a constant *angle*, and on a wide
+    /// rectangle a degree covers far more rim at the middle of a long side
+    /// than near a corner — so the colour raced along some stretches and
+    /// crawled along others. Instead the gradient stays still and its stops
+    /// are recoloured each frame: for each angle, find where that ray meets
+    /// the rim, how far round the rim that is, and which colour belongs there
+    /// now. Clockwise, the way the flowing line runs.
+    static func evenGradient(_ cycle: [(r: Double, g: Double, b: Double, a: Double)],
+                             phase: Double, in rect: CGRect) -> Gradient {
+        guard cycle.count > 1 else { return Gradient(colors: [.white]) }
+        let hw = Double(rect.width / 2), hh = Double(rect.height / 2)
+        let perimeter = 4 * (hw + hh)
+        let steps = 48
+        var stops: [Gradient.Stop] = []
+        stops.reserveCapacity(steps + 1)
+        for k in 0...steps {
+            let theta = Double(k) / Double(steps) * 2 * .pi   // clockwise from 3 o'clock
+            let (c, s) = (cos(theta), sin(theta))
+            let tx = abs(c) > 1e-9 ? hw / abs(c) : .infinity
+            let ty = abs(s) > 1e-9 ? hh / abs(s) : .infinity
+            let x = c * min(tx, ty), y = s * min(tx, ty)
+            // Distance round the rim, clockwise from the middle of the right side.
+            let along: Double
+            if tx <= ty {
+                along = c > 0 ? (y >= 0 ? y : 3 * hh + 4 * hw + (y + hh))
+                              : hh + 2 * hw + (hh - y)
+            } else {
+                along = s > 0 ? hh + (hw - x) : 3 * hh + 2 * hw + (x + hw)
+            }
+            var u = (along / perimeter - phase) * Double(cycle.count)
+            u = u - (u / Double(cycle.count)).rounded(.down) * Double(cycle.count)
+            let i = Int(u) % cycle.count, j = (i + 1) % cycle.count, f = u - Double(Int(u))
+            let a = cycle[i], b = cycle[j]
+            stops.append(.init(color: Color(red: a.r + (b.r - a.r) * f,
+                                            green: a.g + (b.g - a.g) * f,
+                                            blue: a.b + (b.b - a.b) * f),
+                               location: Double(k) / Double(steps)))
+        }
+        return Gradient(stops: stops)
     }
 }
 
