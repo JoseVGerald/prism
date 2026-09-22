@@ -45,11 +45,63 @@ final class Engine: NSObject {
     /// wander far from the truth.
     func smoothTime(at date: Date = Date()) -> Double {
         if let scrubOverride { return scrubOverride }
+        let limit = snapshot.duration > 0 ? snapshot.duration : .greatestFiniteMagnitude
+        // The precise clock, while it is running and fresh: an exact reading
+        // from the page every 250ms or sooner, carried forward at the playback
+        // rate the tempo glide may have set.
+        if let c = clock, c.videoId == snapshot.track?.videoId,
+           date.timeIntervalSince(c.at) < 1 {
+            guard c.playing else { return min(c.t, limit) }
+            return min(c.t + max(date.timeIntervalSince(c.at), 0) * c.rate, limit)
+        }
         let t = snapshot.currentTime
         guard snapshot.playback == .playing else { return t }
         let ahead = min(max(date.timeIntervalSince(snapshotAt), 0), 1.5)
-        let limit = snapshot.duration > 0 ? snapshot.duration : .greatestFiniteMagnitude
         return min(t + ahead, limit)
+    }
+
+    /// The page's latest precise reading. Not observed: it changes ten times a
+    /// second, and the views that want it sample it from their own timelines.
+    @ObservationIgnored private var clock: (t: Double, at: Date, rate: Double,
+                                            playing: Bool, videoId: String?)?
+    @ObservationIgnored private var clockHolders: Set<String> = []
+
+    /// Asks the page for the precise clock on behalf of `who`, or lets go. The
+    /// page listens to the video only while at least one holder wants it.
+    func needPreciseClock(_ who: String, _ on: Bool) {
+        let before = !clockHolders.isEmpty
+        if on { clockHolders.insert(who) } else { clockHolders.remove(who) }
+        let after = !clockHolders.isEmpty
+        guard before != after else { return }
+        run("clock", [after])
+        if !after { clock = nil }
+    }
+
+    /// `~/.prism-eval/track.log` under PRISM_EVAL: every change of the track
+    /// the snapshot reports, to the millisecond, with the queue row it claims.
+    /// The picture follows `snapshot.track`, so a wrong track on screen for a
+    /// moment is a wrong track in here.
+    private func logTrackChange(_ snap: EngineSnapshot) {
+        guard ProcessInfo.processInfo.environment["PRISM_EVAL"] == "1" else { return }
+        let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".prism-eval/track.log")
+        let row = snap.queue.indices.contains(snap.queueIndex) ? snap.queue[snap.queueIndex] : nil
+        let line = "\(Date().formatted(.iso8601.time(includingFractionalSeconds: true))) "
+            + "\(snap.track?.videoId ?? "-") \(snap.track?.title ?? "(none)") · state \(snap.playback) "
+            + "· t \(String(format: "%.2f", snap.currentTime)) · row \(snap.queueIndex) "
+            + "\(row?.videoId ?? "-") \(row?.title ?? "")\n"
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private struct ClockReading: Decodable {
+        let t: Double
+        let rate: Double
+        let playing: Bool
+        let at: Double          // ms since 1970, when the page read it
+        let videoId: String?
     }
 
     // MARK: Web plumbing
@@ -403,7 +455,7 @@ final class Engine: NSObject {
         return try await query("download", [videoId, remove], as: Wrapper.self).result
     }
 
-    struct LyricsPayload: Decodable { let text: String?; let source: String? }
+    struct LyricsPayload: Decodable { let text: String?; let source: String?; let browseId: String? }
 
     func lyrics(videoId: String) async throws -> LyricsPayload {
         struct Wrapper: Decodable { let result: LyricsPayload }
@@ -439,10 +491,21 @@ extension Engine: WKScriptMessageHandler {
         switch envelope.kind {
         case "snapshot":
             if let snap = try? JSONDecoder().decode(EngineSnapshot.self, from: data) {
+                if snap.track?.videoId != snapshot.track?.videoId { logTrackChange(snap) }
                 snapshot = snap
                 snapshotAt = Date()
                 if snap.ready { isBooting = false }
                 dumpSnapshot(data)
+                // A page reload forgets the clock was asked for; ask again.
+                if !clockHolders.isEmpty, snap.ready,
+                   clock.map({ Date().timeIntervalSince($0.at) > 2 }) ?? true {
+                    run("clock", [true])
+                }
+            }
+        case "clock":
+            if let r = try? JSONDecoder().decode(ClockReading.self, from: data) {
+                clock = (r.t, Date(timeIntervalSince1970: r.at / 1000), r.rate,
+                         r.playing, r.videoId)
             }
         case "queueChange":
             logQueueChange(data)

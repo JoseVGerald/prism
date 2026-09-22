@@ -54,14 +54,17 @@ enum ArtworkPalette {
 
     static func palette(for urlString: String?) async -> ArtPalette {
         guard let urlString, let url = URL(string: urlString) else { return .fallback }
-        if let hit = await cache.get(urlString) { return hit }
+        // Keyed by image, not URL: the queue's thumbnail and the player's art
+        // are one cover at two sizes, and were being fetched and analysed twice.
+        let key = ArtworkURL.key(urlString) ?? urlString
+        if let hit = await cache.get(key) { return hit }
         guard let (data, _) = try? await URLSession.shared.data(from: url),
               let image = PlatformImage(data: data),
               let cg = image.prismCGImage
         else { return .fallback }
 
         let result = analyse(cg)
-        await cache.set(urlString, result)
+        await cache.set(key, result)
         return result
     }
 

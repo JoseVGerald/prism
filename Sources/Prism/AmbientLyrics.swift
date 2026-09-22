@@ -14,6 +14,9 @@ import AutoMixCore
 struct AmbientLyricsView: View {
     @Bindable var model: AppModel
     var style: AmbientSettings.LyricStyle
+    /// Unique per instance: one song's view can appear before the last one's
+    /// disappears, and a shared name would let the leaver cancel the arrival.
+    @State private var clockHolder = "locked lyrics \(UUID().uuidString)"
 
     var body: some View {
         Group {
@@ -33,6 +36,9 @@ struct AmbientLyricsView: View {
                 .foregroundStyle(.white.opacity(0.5))
             }
         }
+        // The page reads the video's exact position only while lyrics show.
+        .onAppear { model.engine.needPreciseClock(clockHolder, true) }
+        .onDisappear { model.engine.needPreciseClock(clockHolder, false) }
     }
 
     private func timed(_ lines: [TimedLine], source: String) -> some View {

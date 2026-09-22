@@ -24,7 +24,11 @@ struct LyricsView: View {
     @Bindable var model: AppModel
 
     private var snap: EngineSnapshot { model.engine.snapshot }
-    private var active: Int? { model.lyrics?.index(at: model.engine.displayTime) }
+    /// The line being sung. Set from a light 20 Hz clock below rather than
+    /// computed from `displayTime`, which moves once a second and left the
+    /// highlight up to a second behind the singer.
+    @State private var active: Int?
+    @State private var clockHolder = "lyrics panel \(UUID().uuidString)"
 
     var body: some View {
         Group {
@@ -42,6 +46,20 @@ struct LyricsView: View {
                 }
             }
         }
+        .background {
+            // Invisible; re-evaluated twenty times a second, but `active` — and
+            // so the sheet — only changes when the line does.
+            if let lyrics = model.lyrics, lyrics.synced {
+                TimelineView(.periodic(from: .now, by: 0.05)) { tl in
+                    Color.clear
+                        .onChange(of: lyrics.index(at: model.engine.smoothTime(at: tl.date)),
+                                  initial: true) { _, now in active = now }
+                }
+            }
+        }
+        // The page reads the video's exact position only while this shows.
+        .onAppear { model.engine.needPreciseClock(clockHolder, true) }
+        .onDisappear { model.engine.needPreciseClock(clockHolder, false) }
     }
 
     private func sheet(_ lyrics: Lyrics) -> some View {

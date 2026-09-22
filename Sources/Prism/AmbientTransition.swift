@@ -12,7 +12,7 @@ enum AmbientTransition {
 
     /// 0…1, or nil when no hand-over is under way.
     @MainActor
-    static func progress(model: AppModel, at date: Date, latch: Latch) -> Double? {
+    static func progress(model: AppModel, at date: Date, handover: Handover) -> Double? {
         let raw: Double? = {
             if let clock = model.transitions.fadeClock {
                 return min(max(date.timeIntervalSince(clock.began) / clock.length, 0), 1)
@@ -24,32 +24,59 @@ enum AmbientTransition {
             guard remaining < fallbackWindow else { return nil }
             return min(max(1 - remaining / fallbackWindow, 0), 1)
         }()
-        return latch.hold(raw, current: model.engine.snapshot.track?.videoId,
-                          next: model.nextEntry?.videoId, at: date)
+        return handover.update(raw, model: model, at: date)
     }
 
-    /// Keeps a finished hand-over at 1 until the song has actually changed.
+    /// Which song a hand-over is going to, and holding it there until it has
+    /// actually arrived.
     ///
-    /// The fade ends, and the fallback's clock runs out, a moment before the
-    /// engine reports the new track — the handover waits for YouTube to
-    /// advance. Without this the picture sprang back to the old song for that
-    /// moment and then jumped to the new one. A class held in `@State` so it
-    /// can remember across frames without being state a frame writes to.
+    /// **Pinned when the hand-over starts.** "The entry after the current one"
+    /// is not stable through a song change: YouTube sometimes moves the queue
+    /// on a couple of seconds before it reports the new song, and for that
+    /// moment the entry after the *old* song is the song after the new one.
+    /// Read live, the incoming card and colours jumped to that song for ~2.5s.
+    ///
+    /// **Held at 1 until arrival.** The fade ends, and the fallback's clock
+    /// runs out, a moment before the engine reports the new track; without the
+    /// hold the picture sprang back to the old song and then jumped.
+    ///
+    /// A class held in `@State`, so it can remember across frames without
+    /// being state a frame writes to.
     @MainActor
-    final class Latch {
-        private var waitingFor: String?
-        private var since = Date.distantPast
+    final class Handover {
+        /// The song being handed to, and its colours.
+        private(set) var incoming: QueueEntry?
+        private(set) var incomingPalette: ArtPalette = .fallback
+        private var outgoing: String?
+        private var holdingSince: Date?
 
-        var holding: Bool { waitingFor != nil }
+        var holding: Bool { holdingSince != nil }
 
-        func hold(_ p: Double?, current: String?, next: String?, at date: Date) -> Double? {
-            if let w = waitingFor {
-                // Arrived — or it never will (a skip failed): let go either way.
-                if current == w || date.timeIntervalSince(since) > 4 { waitingFor = nil }
-                else { return 1 }
+        func update(_ raw: Double?, model: AppModel, at date: Date) -> Double? {
+            let current = model.engine.snapshot.track?.videoId
+
+            if let since = holdingSince, let target = incoming?.videoId {
+                // Arrived, or something else is playing now (a skip), or it
+                // never came: let go — otherwise stay finished.
+                let moved = current != outgoing && current != target
+                guard current == target || moved || date.timeIntervalSince(since) > 4 else { return 1 }
+                holdingSince = nil
+                incoming = nil
+                return nil
             }
-            if let p, p >= 0.97, let next { waitingFor = next; since = date }
-            return p
+
+            guard let raw, raw > 0 else { incoming = nil; return raw }
+            if incoming == nil, let next = model.nextEntry, next.videoId != current {
+                incoming = next
+                outgoing = current
+            }
+            // Colours may arrive after the pin; take them while the queue
+            // still agrees which song is next, and keep them once it doesn't.
+            if let pinned = incoming, model.nextEntry?.videoId == pinned.videoId {
+                incomingPalette = model.nextPalette
+            }
+            if raw >= 0.97, incoming != nil { holdingSince = date }
+            return raw
         }
     }
 

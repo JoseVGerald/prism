@@ -588,8 +588,44 @@ enum Bridge {
     } catch (e) {}
   };
 
+  // ---------------------------------------------------------------- clock
+  // The exact playback position, for lyrics, on only while something needs it.
+  // Snapshots go out when the whole second changes, so between them Prism was
+  // guessing, and a seek, pause or tempo change went unseen until the next.
+  // This reads the video itself on every `timeupdate` and at once on a seek,
+  // pause, play or rate change, stamped with the wall-clock moment it was read.
+  //
+  // Media events, not a timer: this page is hidden behind Prism's UI, and
+  // WebKit throttles a hidden page's repeating timers to once a second —
+  // measured, a 100ms interval ran at 1000ms. `timeupdate` is driven by the
+  // media and kept its 250ms pace (measured). Media events do not bubble, so
+  // they are caught on the way down (capture) at the document, which also
+  // survives the player swapping its <video> element.
+  let clockOn = false;
+  const clockTick = () => {
+    const p = PLAYER();
+    const v = p?.querySelector('video');
+    if (!v) return;
+    let id = null;
+    try { id = p.getVideoData()?.video_id || null; } catch (e) {}
+    post({
+      kind: 'clock', t: v.currentTime, rate: v.playbackRate || 1,
+      playing: !v.paused && !v.seeking && v.readyState > 2,
+      at: performance.timeOrigin + performance.now(), videoId: id
+    });
+  };
+  const CLOCK_EVENTS = ['timeupdate', 'seeked', 'pause', 'play', 'playing', 'ratechange', 'waiting'];
+  const setClock = (on) => {
+    if (on === clockOn) return;
+    clockOn = on;
+    CLOCK_EVENTS.forEach(e => on ? document.addEventListener(e, clockTick, true)
+                                 : document.removeEventListener(e, clockTick, true));
+    if (on) clockTick();
+  };
+
   // ---------------------------------------------------------------- commands
   const cmds = {
+    clock: (on) => setClock(!!on),
     play:  () => { PLAYER()?.playVideo(); },
     pause: () => { PLAYER()?.pauseVideo(); },
     toggle: () => {
@@ -1466,17 +1502,18 @@ const allScopeSearch = async (reqId, query) => {
         supported: true, ok, reason: '' }});
     },
 
-    // YouTube's own lyrics: plain text only. Every client context returns the
-    // same shape — no `timedLyrics`, no cue ranges — so this is the fallback
-    // for tracks LRCLIB has never seen, not the primary source.
+    // YouTube's own lyrics as the web client sees them: plain text. The
+    // lyrics page's browseId goes back too — asked for as the Android app,
+    // the same page comes back *timed* (Swift makes that request; see
+    // LyricsService.youtubeTimed).
     lyrics: async (reqId, videoId) => {
-      let text = null, source = null;
+      let text = null, source = null, browseId = null;
       try {
         const nx = await innertube('next', { videoId });
         const tabs = nx?.contents?.singleColumnMusicWatchNextResultsRenderer
           ?.tabbedRenderer?.watchNextTabbedResultsRenderer?.tabs || [];
         const tab = tabs.find(t => /lyric/i.test(runs(t?.tabRenderer?.title) || t?.tabRenderer?.title || ''));
-        const browseId = tab?.tabRenderer?.endpoint?.browseEndpoint?.browseId;
+        browseId = tab?.tabRenderer?.endpoint?.browseEndpoint?.browseId || null;
         if (browseId) {
           const lj = await innertube('browse', { browseId });
           const shelf = collect(lj, 'musicDescriptionShelfRenderer', 1)[0];
@@ -1484,7 +1521,7 @@ const allScopeSearch = async (reqId, query) => {
           source = runs(shelf?.footer);
         }
       } catch (e) {}
-      post({ kind: 'lyrics', requestId: reqId, result: { text, source } });
+      post({ kind: 'lyrics', requestId: reqId, result: { text, source, browseId } });
     },
 
     // Search, keeping the shelf each result came from *when there is one*.

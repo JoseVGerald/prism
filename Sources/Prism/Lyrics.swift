@@ -40,14 +40,20 @@ struct Lyrics {
     }
 }
 
-/// Fetches lyrics, preferring ones that are actually timed.
+/// Fetches lyrics, preferring the best-timed.
 ///
-/// YouTube only ever returns a flat block of text — verified against the web,
-/// iOS Music and Android Music client contexts, all of which come back with
-/// `serializedLyricInfo` and no cue ranges. LRCLIB is a free, keyless, public
-/// lyrics database that does publish LRC timings, so it is tried first and
-/// YouTube is the fallback. The only thing sent off-machine is the track title,
-/// artist, album and duration.
+/// Three sources, asked at once:
+/// - **LRCLIB**, a free public database of community-timed LRC files. Usually
+///   timed per line; now and then per word (enhanced LRC).
+/// - **YouTube Music's timed lyrics** — Musixmatch's, the same provider Spotify
+///   uses, timed per line by people and checked. The web client only ever gets
+///   plain text, but the Android app gets the same lyrics page with cue times
+///   (measured: 59 timed lines, "Source: Musixmatch").
+/// - **YouTube Music's plain text**, for tracks neither has timed.
+///
+/// Preference: LRCLIB when it has per-word times, else Musixmatch, else
+/// LRCLIB's line times, else any plain text. Off-machine: the title, artist,
+/// album and duration to LRCLIB; the video id to YouTube, which already has it.
 @MainActor
 enum LyricsService {
 
@@ -55,22 +61,87 @@ enum LyricsService {
 
     static func lyrics(for track: Track, engine: Engine) async -> Lyrics {
         if let hit = cache[track.videoId] { return hit }
-
-        if let synced = await lrclib(track) {
-            cache[track.videoId] = synced
-            return synced
-        }
-        let fallback = await youtube(track, engine: engine)
-        cache[track.videoId] = fallback
-        return fallback
+        let found = await fetch(track, engine: engine)
+        if !found.isEmpty { cache[track.videoId] = found }
+        return found
     }
 
-    /// Looks a coming track up ahead of time. LRCLIB only, and cached only on
-    /// a hit: the YouTube fallback reads the page, which is still on the
-    /// current song, so running it early could file the wrong lyrics.
-    static func prefetch(_ track: Track) async {
-        guard cache[track.videoId] == nil, let synced = await lrclib(track) else { return }
-        cache[track.videoId] = synced
+    /// Looks a coming track up ahead of time, so its lyrics are there the
+    /// moment it starts. Works for any track: the YouTube lookups take the
+    /// video id, not whatever the page is playing.
+    static func prefetch(_ track: Track, engine: Engine) async {
+        guard cache[track.videoId] == nil else { return }
+        _ = await lyrics(for: track, engine: engine)
+    }
+
+    private static func fetch(_ track: Track, engine: Engine) async -> Lyrics {
+        async let community = lrclib(track)
+        async let page = try? engine.lyrics(videoId: track.videoId)
+        let (lrc, yt) = await (community, page)
+
+        if let lrc, lrc.synced, lrc.lines.contains(where: { $0.wordStarts != nil }) { return lrc }
+        if let id = yt?.browseId, let timed = await youtubeTimed(browseId: id) { return timed }
+        if let lrc, lrc.synced { return lrc }
+        if let text = yt?.text, !text.isEmpty {
+            return Lyrics(lines: split(text), synced: false, source: yt?.source ?? "YouTube Music")
+        }
+        return lrc ?? Lyrics(lines: [], synced: false, source: "")
+    }
+
+    // MARK: YouTube Music, timed
+
+    /// The Android app's client identity. If YouTube retires this version the
+    /// request fails and the other sources carry on.
+    private static let androidClient: [String: Any] = [
+        "clientName": "ANDROID_MUSIC", "clientVersion": "7.21.50",
+        "androidSdkVersion": 30, "hl": "en", "gl": "US"
+    ]
+
+    private static func youtubeTimed(browseId: String) async -> Lyrics? {
+        guard let url = URL(string: "https://music.youtube.com/youtubei/v1/browse?prettyPrint=false"),
+              let body = try? JSONSerialization.data(withJSONObject: [
+                "context": ["client": androidClient], "browseId": browseId])
+        else { return nil }
+        var req = URLRequest(url: url, timeoutInterval: 10)
+        req.httpMethod = "POST"
+        req.httpBody = body
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("com.google.android.apps.youtube.music/7.21.50 (Linux; U; Android 11) gzip",
+                     forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data),
+              let model = first("timedLyricsModel", in: json) as? [String: Any],
+              let lyricsData = model["lyricsData"] as? [String: Any],
+              let cues = lyricsData["timedLyricsData"] as? [[String: Any]]
+        else { return nil }
+
+        var lines: [LyricLine] = []
+        for cue in cues {
+            guard let text = cue["lyricLine"] as? String,
+                  let range = cue["cueRange"] as? [String: Any],
+                  let ms = (range["startTimeMilliseconds"] as? String).flatMap(Double.init)
+                        ?? (range["startTimeMilliseconds"] as? Double)
+            else { continue }
+            lines.append(LyricLine(at: ms / 1000, text: text, id: lines.count))
+        }
+        guard !lines.isEmpty else { return nil }
+        let source = (lyricsData["sourceMessage"] as? String)?
+            .replacingOccurrences(of: "Source: ", with: "") ?? "YouTube Music"
+        return Lyrics(lines: lines, synced: true, source: source)
+    }
+
+    /// The first value under `key` anywhere in a decoded JSON tree. The
+    /// response nests it deep in renderer wrappers whose names change more
+    /// often than the model itself does.
+    private static func first(_ key: String, in node: Any) -> Any? {
+        if let dict = node as? [String: Any] {
+            if let hit = dict[key] { return hit }
+            for value in dict.values { if let hit = first(key, in: value) { return hit } }
+        } else if let list = node as? [Any] {
+            for value in list { if let hit = first(key, in: value) { return hit } }
+        }
+        return nil
     }
 
     // MARK: LRCLIB
@@ -141,15 +212,6 @@ enum LyricsService {
         LRC.parse(raw).enumerated().map { i, l in
             LyricLine(at: l.start, text: l.text, id: i, wordStarts: l.wordStarts)
         }
-    }
-
-    // MARK: YouTube fallback
-
-    private static func youtube(_ track: Track, engine: Engine) async -> Lyrics {
-        guard let r = try? await engine.lyrics(videoId: track.videoId),
-              let text = r.text, !text.isEmpty
-        else { return Lyrics(lines: [], synced: false, source: "") }
-        return Lyrics(lines: split(text), synced: false, source: r.source ?? "YouTube Music")
     }
 
     // MARK: Shared

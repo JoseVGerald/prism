@@ -282,7 +282,7 @@ final class AppModel {
                           durationText: next.durationText,
                           durationSeconds: next.durationText.flatMap(Self.seconds),
                           artworkURL: next.artworkURL)
-        Task { await LyricsService.prefetch(track) }
+        Task { await LyricsService.prefetch(track, engine: engine) }
     }
 
     /// "3:45" or "1:02:03" in seconds.
@@ -290,6 +290,16 @@ final class AppModel {
         let parts = text.split(separator: ":").compactMap { Double($0) }
         guard !parts.isEmpty, parts.count <= 3 else { return nil }
         return parts.reduce(0) { $0 * 60 + $1 }
+    }
+
+    /// The last few covers' colours, by image, readable without waiting.
+    private var recentPalettes: [String: ArtPalette] = [:]
+    private func remember(_ p: ArtPalette, for url: String?) {
+        guard let key = ArtworkURL.key(url) else { return }
+        if recentPalettes.count > 8, recentPalettes[key] == nil {
+            recentPalettes.removeValue(forKey: recentPalettes.keys.first!)
+        }
+        recentPalettes[key] = p
     }
 
     private func refreshNextPalette() {
@@ -300,6 +310,7 @@ final class AppModel {
         nextPaletteTask = Task {
             let found = await ArtworkPalette.palette(for: url)
             guard !Task.isCancelled else { return }
+            remember(found, for: url)
             nextPalette = found
         }
     }
@@ -597,18 +608,22 @@ final class AppModel {
         // blending towards, so its colours are known. Taking them immediately
         // stops the rim flashing back to the *outgoing* song's colours for the
         // ~0.7s the fetch-and-animate would otherwise take.
-        // Compared by image, not URL: the queue's thumbnail and the player's
+        // Looked up by image, not URL: the queue's thumbnail and the player's
         // art are the same cover at different sizes, and comparing the URLs
         // never matched — the rim flashed back to the old song at every swap.
-        if let artworkURL, ArtworkURL.key(artworkURL) == ArtworkURL.key(nextPaletteFor) {
+        // A memo rather than just "was it the next one": YouTube sometimes
+        // moves the queue on before it reports the new song, by which time
+        // `nextPalette` already belongs to the song after.
+        if let key = ArtworkURL.key(artworkURL), let known = recentPalettes[key] {
             paletteTask?.cancel()
-            palette = nextPalette
+            palette = known
             return
         }
         paletteTask?.cancel()
         paletteTask = Task {
             let next = await ArtworkPalette.palette(for: artworkURL)
             guard !Task.isCancelled else { return }
+            remember(next, for: artworkURL)
             withAnimation(.easeInOut(duration: 0.7)) { palette = next }
         }
     }

@@ -22,7 +22,7 @@ struct AmbientSurface: View {
     @State private var hoveringArt = false
     @State private var chromeVisible = true
     @State private var idleTask: Task<Void, Never>?
-    @State private var latch = AmbientTransition.Latch()
+    @State private var handover = AmbientTransition.Handover()
     /// This song's style when the setting is Random, picked as the song starts.
     @State private var randomStyle: AmbientSettings.LyricStyle = .prism
 
@@ -35,7 +35,7 @@ struct AmbientSurface: View {
     /// paused and the surface redraws only when something it reads changes,
     /// rather than rebuilding every view twenty times a second for nothing.
     private var nearHandover: Bool {
-        if model.transitions.fadeClock != nil || latch.holding { return true }
+        if model.transitions.fadeClock != nil || handover.holding { return true }
         let d = snap.duration
         return model.nextEntry != nil && d > 0
             && d - snap.currentTime < AmbientTransition.fallbackWindow + 1
@@ -45,17 +45,17 @@ struct AmbientSurface: View {
         // At the display's pace while a hand-over runs — at 20fps the cards
         // visibly stepped — and paused the rest of the time.
         TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !nearHandover)) { tl in
-            let raw = AmbientTransition.progress(model: model, at: tl.date, latch: latch)
+            let raw = AmbientTransition.progress(model: model, at: tl.date, handover: handover)
             let e = AmbientTransition.smoothstep(0, 1, raw ?? 0)
             ZStack {
                 Color.black
                 if showingLyrics {
                     backdrop(progress: e)
                 } else if e > 0 {
-                    TransitionFields(from: model.palette, to: model.nextPalette, progress: e)
+                    TransitionFields(from: model.palette, to: incomingPalette, progress: e)
                 }
 
-                AmbientLight(palette: ArtPalette.blend(model.palette, model.nextPalette, e),
+                AmbientLight(palette: ArtPalette.blend(model.palette, incomingPalette, e),
                              isPlaying: playing,
                              thickness: model.ambient.thickness,
                              glow: model.ambient.glow,
@@ -126,12 +126,20 @@ struct AmbientSurface: View {
         var out = [Slot(id: track?.videoId ?? "none", incoming: false,
                         title: track?.title ?? "Nothing playing", artist: track?.artist ?? "",
                         art: ArtworkURL.large(track?.artworkURL), palette: model.palette)]
-        if let next = model.nextEntry, next.videoId != track?.videoId {
+        if let next = incomingEntry, next.videoId != track?.videoId {
             out.append(Slot(id: next.videoId, incoming: true, title: next.title,
                             artist: next.artist, art: ArtworkURL.large(next.artworkURL),
-                            palette: model.nextPalette))
+                            palette: incomingPalette))
         }
         return out
+    }
+
+    /// The song being handed to: pinned for the length of a hand-over (see
+    /// `AmbientTransition.Handover`), otherwise whatever is next — drawn
+    /// unseen so its art is loaded before it is needed.
+    private var incomingEntry: QueueEntry? { handover.incoming ?? model.nextEntry }
+    private var incomingPalette: ArtPalette {
+        handover.incoming != nil ? handover.incomingPalette : model.nextPalette
     }
 
     private func coverFace(progress e: Double) -> some View {
@@ -306,7 +314,7 @@ struct AmbientSurface: View {
     /// flashing the old cover back for a beat.
     private func backdrop(progress e: Double) -> some View {
         var layers = [(url: ArtworkURL.large(track?.artworkURL) ?? "none", opacity: 1.0)]
-        if e > 0, let next = ArtworkURL.large(model.nextEntry?.artworkURL), next != layers[0].url {
+        if e > 0, let next = ArtworkURL.large(incomingEntry?.artworkURL), next != layers[0].url {
             layers.append((next, e))
         }
         return ZStack {
