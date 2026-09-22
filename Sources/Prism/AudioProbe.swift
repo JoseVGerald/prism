@@ -21,9 +21,11 @@ final class AudioProbe: NSObject, SCStreamOutput, SCStreamDelegate {
     private let url = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent(".prism-eval/rms.log")
 
-    /// Starts capturing unless the debug console is off.
+    /// Starts capturing only when asked for by name. It used to ride on
+    /// PRISM_EVAL, which meant every debug launch put up the screen-recording
+    /// prompt and indicator for a log nobody was reading.
     func startIfEnabled() {
-        guard ProcessInfo.processInfo.environment["PRISM_EVAL"] == "1" else { return }
+        guard ProcessInfo.processInfo.environment["PRISM_AUDIO_PROBE"] == "1" else { return }
         Task { await start() }
     }
 

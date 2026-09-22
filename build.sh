@@ -50,8 +50,18 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Ad-hoc signature: enough for local use, and required for the webview's
-# networking to behave on Apple silicon.
-codesign --force --deep --sign - "$APP" 2>/dev/null || echo "(codesign skipped)"
+# Signed with the Apple Development certificate when there is one. An ad-hoc
+# signature is enough to run (and the webview's networking needs *some*
+# signature on Apple silicon), but macOS pins privacy grants to it by the
+# binary's hash — so every rebuild became a stranger to Screen & System Audio
+# Recording and asked again. A certificate identity survives rebuilds.
+IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+            | awk '/Apple Development/ { print $2; exit }')"
+if [ -n "$IDENTITY" ] && codesign --force --deep --sign "$IDENTITY" "$APP" 2>/dev/null; then
+    echo "==> Signed with Apple Development identity"
+else
+    codesign --force --deep --sign - "$APP" 2>/dev/null || echo "(codesign skipped)"
+    echo "==> Ad-hoc signed — privacy permissions will re-prompt after each rebuild"
+fi
 
 echo "==> Built $(pwd)/$APP"
