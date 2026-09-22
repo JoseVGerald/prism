@@ -33,6 +33,25 @@ final class Engine: NSObject {
 
     var displayTime: Double { scrubOverride ?? snapshot.currentTime }
 
+    /// When the current snapshot arrived.
+    private(set) var snapshotAt = Date()
+
+    /// Playback position extrapolated between snapshots.
+    ///
+    /// Snapshots are pushed when the whole second changes, so `displayTime`
+    /// moves in one-second lurches — fine for a scrubber, useless for lyrics
+    /// that fill word by word. Between pushes this runs the clock forward
+    /// locally while playing, capped at 1.5s so a stalled bridge cannot let it
+    /// wander far from the truth.
+    func smoothTime(at date: Date = Date()) -> Double {
+        if let scrubOverride { return scrubOverride }
+        let t = snapshot.currentTime
+        guard snapshot.playback == .playing else { return t }
+        let ahead = min(max(date.timeIntervalSince(snapshotAt), 0), 1.5)
+        let limit = snapshot.duration > 0 ? snapshot.duration : .greatestFiniteMagnitude
+        return min(t + ahead, limit)
+    }
+
     // MARK: Web plumbing
 
     private(set) var webView: WKWebView!
@@ -421,6 +440,7 @@ extension Engine: WKScriptMessageHandler {
         case "snapshot":
             if let snap = try? JSONDecoder().decode(EngineSnapshot.self, from: data) {
                 snapshot = snap
+                snapshotAt = Date()
                 if snap.ready { isBooting = false }
                 dumpSnapshot(data)
             }

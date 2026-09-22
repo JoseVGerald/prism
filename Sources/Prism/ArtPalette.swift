@@ -23,6 +23,15 @@ struct ArtPalette: Equatable, Sendable {
             : Self.lerp(mid, bottom, (q - 0.5) * 2)
     }
 
+    /// Every colour of `a` moved `t` of the way towards `b`. Used to hand the
+    /// rim from one song's colours to the next during a transition.
+    static func blend(_ a: ArtPalette, _ b: ArtPalette, _ t: Double) -> ArtPalette {
+        let k = min(max(t, 0), 1)
+        return ArtPalette(top: lerp(a.top, b.top, k), mid: lerp(a.mid, b.mid, k),
+                          bottom: lerp(a.bottom, b.bottom, k),
+                          accent: lerp(a.accent, b.accent, k))
+    }
+
     private static func lerp(_ a: Color, _ b: Color, _ t: Double) -> Color {
         let x = a.prismRGBA
         let y = b.prismRGBA

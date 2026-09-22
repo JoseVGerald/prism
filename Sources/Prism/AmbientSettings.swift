@@ -30,6 +30,21 @@ final class AmbientSettings {
         }
     }
 
+    /// How lyrics are drawn in locked mode.
+    enum LyricStyle: String, CaseIterable, Identifiable {
+        case prism, splitFlap, depthTunnel, wordRain, liquidFill
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .prism:       return "Prism"
+            case .splitFlap:   return "Split-flap"
+            case .depthTunnel: return "Depth tunnel"
+            case .wordRain:    return "Word rain"
+            case .liquidFill:  return "Liquid fill"
+            }
+        }
+    }
+
     private enum Key {
         static let rim = "prism.ambient.rimGlow"
         static let thickness = "prism.ambient.thickness"
@@ -38,6 +53,8 @@ final class AmbientSettings {
         static let equalizers = "prism.ambient.showEqualizers"
         static let idle = "prism.ambient.idleSeconds"
         static let pulse = "prism.ambient.pulse"
+        static let lyricStyle = "prism.ambient.lyricStyle"
+        static let flow = "prism.ambient.flow"
     }
 
     /// The rim of light around the window. On by default — it is the feature.
@@ -55,6 +72,9 @@ final class AmbientSettings {
     /// How far the light swings between its quietest and brightest, 0…1.
     /// 0 holds a steady line; 1 is the full pulse.
     var pulse: Double { didSet { store(pulse, Key.pulse) } }
+    var lyricStyle: LyricStyle { didSet { store(lyricStyle.rawValue, Key.lyricStyle) } }
+    /// A light that keeps running round the rim at the song's tempo.
+    var flow: Bool { didSet { store(flow, Key.flow) } }
 
     /// Whether the full-screen ambient surface is up right now. Not persisted:
     /// a restart should never come back into it.
@@ -75,5 +95,7 @@ final class AmbientSettings {
         showEqualizers = d.object(forKey: Key.equalizers) as? Bool ?? false
         idleSeconds = d.object(forKey: Key.idle) as? Double ?? 120
         pulse = d.object(forKey: Key.pulse) as? Double ?? 0.38
+        lyricStyle = LyricStyle(rawValue: d.string(forKey: Key.lyricStyle) ?? "") ?? .prism
+        flow = d.object(forKey: Key.flow) as? Bool ?? true
     }
 }

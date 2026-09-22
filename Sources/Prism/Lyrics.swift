@@ -1,10 +1,16 @@
 import Foundation
+// A module on macOS, compiled into the binary on iOS — see build-ios.sh.
+#if canImport(AutoMixCore)
+import AutoMixCore
+#endif
 
 struct LyricLine: Identifiable, Hashable {
     /// Seconds into the track. Nil for unsynced sheets.
     var at: Double?
     var text: String
     var id: Int
+    /// Exact word starts from enhanced LRC, on the rare track that has them.
+    var wordStarts: [Double]? = nil
 }
 
 struct Lyrics {
@@ -13,6 +19,14 @@ struct Lyrics {
     var source: String
 
     var isEmpty: Bool { lines.isEmpty }
+
+    /// The lines in the form the word-timing model takes. Empty when unsynced.
+    var timed: [TimedLine] {
+        guard synced else { return [] }
+        return lines.compactMap { l in
+            l.at.map { TimedLine(start: $0, text: l.text, wordStarts: l.wordStarts) }
+        }
+    }
 
     /// Index of the line that should be lit at `time`, if any.
     func index(at time: Double) -> Int? {
@@ -112,27 +126,13 @@ enum LyricsService {
         return nil
     }
 
-    /// `[mm:ss.cc] text`, with repeated stamps on one line for repeated phrases.
+    /// Delegates to the shared parser in AutoMixCore, which is tested and also
+    /// strips enhanced-LRC `<mm:ss.xx>` word stamps — previously those were left
+    /// sitting in the displayed text.
     private static func parseLRC(_ raw: String) -> [LyricLine] {
-        var out: [(Double, String)] = []
-        for line in raw.components(separatedBy: .newlines) {
-            var rest = Substring(line)
-            var stamps: [Double] = []
-            while rest.first == "[" {
-                guard let close = rest.firstIndex(of: "]") else { break }
-                let body = rest[rest.index(after: rest.startIndex)..<close]
-                let parts = body.split(separator: ":")
-                if parts.count == 2, let m = Double(parts[0]), let s = Double(parts[1]) {
-                    stamps.append(m * 60 + s)
-                }
-                rest = rest[rest.index(after: close)...]
-            }
-            guard !stamps.isEmpty else { continue }
-            let text = rest.trimmingCharacters(in: .whitespaces)
-            for s in stamps { out.append((s, text)) }
+        LRC.parse(raw).enumerated().map { i, l in
+            LyricLine(at: l.start, text: l.text, id: i, wordStarts: l.wordStarts)
         }
-        out.sort { $0.0 < $1.0 }
-        return out.enumerated().map { LyricLine(at: $0.element.0, text: $0.element.1, id: $0.offset) }
     }
 
     // MARK: YouTube fallback

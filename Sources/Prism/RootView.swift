@@ -15,6 +15,11 @@ struct RootView: View {
     private var engine: Engine { model.engine }
     private var snap: EngineSnapshot { engine.snapshot }
 
+    private var rimHearsMusic: Bool {
+        model.ambient.motion == .liveAudio && model.ambient.rimGlow
+            && !model.videoMode && model.windowVisible && !engine.showingEngine
+    }
+
     var body: some View {
         ZStack {
             // In video mode the webview stops being a hidden engine and becomes
@@ -53,7 +58,10 @@ struct RootView: View {
                                  corner: 12,
                                  animating: model.windowVisible,
                                  beatPeriod: model.beatPeriod,
-                                 pulse: model.ambient.pulse)
+                                 pulse: model.ambient.pulse,
+                                 audio: rimHearsMusic ? model.audioSource : nil,
+                                 flow: model.ambient.flow,
+                                 tempo: model.trackTempo)
                         .ignoresSafeArea()
                         .transition(.opacity)
                 }
@@ -143,6 +151,15 @@ struct RootView: View {
             model.prefetchTempoIfNeeded()
         }
         .onChange(of: snap.hasVideo) { _, has in model.syncVideoMode(hasVideo: has) }
+        #if canImport(AppKit)
+        // The window's rim holds capture open only while it is actually drawing
+        // a live light: Motion on Live audio, rim on, not in video mode, and the
+        // window visible. Anything else lets go, so the screen-recording
+        // indicator is never on for a light nobody can see.
+        .onChange(of: rimHearsMusic, initial: true) { _, want in
+            model.liveAudio.set("window rim", want)
+        }
+        #endif
         // The mini player and the notch island belong to this window's session,
         // so they go when it does rather than stranding panels with no way back.
         .onDisappear { model.closeFloating() }

@@ -17,6 +17,7 @@ struct SettingsPanel: View {
         var id: String { rawValue }
     }
     @State private var tab: Tab = .ambient
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -62,6 +63,21 @@ struct SettingsPanel: View {
                 }
 
                 VStack(alignment: .leading, spacing: 5) {
+                    Toggle("Flowing line", isOn: Binding(get: { ambient.flow },
+                                                         set: { ambient.flow = $0
+                                                                model.prefetchTempoIfNeeded() }))
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .font(.callout)
+                    Text("A light that runs round the rim, two bars a lap at the "
+                         + "song's tempo, surging on each beat. The tempo is heard "
+                         + "from the audio with Live audio on (and always in locked "
+                         + "mode); otherwise it is AutoMix's lookup, when there is one.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
                     Text("Motion").font(.callout)
                     Picker("", selection: Binding(get: { ambient.motion },
                                                   set: { ambient.motion = $0
@@ -75,7 +91,35 @@ struct SettingsPanel: View {
                     Text(motionNote)
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    #if canImport(AppKit)
+                    if ambient.motion == .liveAudio, model.liveAudio.failure != nil {
+                        Button("Open Privacy & Security") {
+                            openURL(URL(string: "x-apple.systempreferences:com.apple.preference"
+                                        + ".security?Privacy_ScreenCapture")!)
+                        }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                    }
+                    #endif
                 }
+            }
+
+            Divider().opacity(0.5)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    Text("Lyric style").font(.callout)
+                    Spacer()
+                    Picker("", selection: Binding(get: { ambient.lyricStyle },
+                                                  set: { ambient.lyricStyle = $0 })) {
+                        ForEach(AmbientSettings.LyricStyle.allCases) { Text($0.label).tag($0) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                Text("How lyrics move in locked mode — click the cover there to show them.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Divider().opacity(0.5)
@@ -134,9 +178,13 @@ struct SettingsPanel: View {
                 : String(format: "Pulsing at %.0f BPM, from the tempo AutoMix looks up.",
                          60 / (model.beatPeriod ?? 1))
         case .liveAudio:
-            return "Not wired up yet — it needs the system-audio capture promoting "
-                 + "out of debug, which asks for Screen Recording. Breathing is used "
-                 + "until then."
+            #if canImport(AppKit)
+            if let failure = model.liveAudio.failure { return failure }
+            #endif
+            return "Reacts to the music itself — bass drives the glow, and each hit "
+                 + "sends a comet round the rim. It hears the audio through macOS's "
+                 + "screen capture, so the recording indicator shows while the light "
+                 + "is on screen. Locked mode always reacts this way."
         }
     }
 

@@ -49,6 +49,7 @@ final class AmbientPanelController {
                              styleMask: [.borderless, .nonactivatingPanel],
                              backing: .buffered, defer: false)
         p.onDismiss = { [weak self] in self?.dismiss() }
+        p.onScroll = { [weak self] dy in self?.model.nudgeVolume(by: dy) }
         p.isOpaque = true
         p.backgroundColor = .black
         p.hasShadow = false
@@ -104,9 +105,31 @@ final class AmbientPanel: NSPanel {
         frameRect
     }
 
+    /// Vertical scroll anywhere, in volume points.
+    var onScroll: ((Double) -> Void)?
+
     override func keyDown(with event: NSEvent) { onDismiss?() }
-    override func mouseDown(with event: NSEvent) { onDismiss?() }
     override func rightMouseDown(with event: NSEvent) { onDismiss?() }
+
+    // No `mouseDown` override any more. It used to close the surface on every
+    // click, which a surface with a clickable cover, hover controls and a
+    // scrubber cannot have. Click-to-leave now lives in SwiftUI as the root
+    // tap gesture, where every control's own gesture outranks it — a click on
+    // a button can no longer fall through to an AppKit handler that closes
+    // the surface underneath it.
+
+    override func scrollWheel(with event: NSEvent) {
+        // Precise (trackpad) deltas are in points and arrive many per gesture;
+        // a mouse wheel sends a few coarse lines. Scale each to a sensible step.
+        let dy = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY * 0.25
+                                                 : event.scrollingDeltaY * 3
+        guard dy != 0 else { return }
+        // Fingers up raises the volume, whichever way natural scrolling is set.
+        // With it on, the reported delta runs *against* the fingers — the same
+        // fact the notch swipe established, where a swipe to the right came in
+        // negative on this Mac — so the sign is flipped back to the gesture.
+        onScroll?(event.isDirectionInvertedFromDevice ? -dy : dy)
+    }
 
     /// Escape and ⌘. arrive here rather than as `keyDown`. Returning true keeps
     /// the beep away; either way the surface goes.

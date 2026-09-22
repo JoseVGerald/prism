@@ -130,6 +130,10 @@ final class Transitions {
     }
 
     private(set) var fading = false
+    /// 0…1 through the blend while one runs, held at 1 through the handover,
+    /// nil otherwise. Quantised to hundredths so the locked-mode transition can
+    /// follow the audio without invalidating a view on every 40ms tick.
+    private(set) var fadeProgress: Double?
     /// Why the last transition was not a crossfade, for the UI to surface.
     private(set) var lastProblem: String?
 
@@ -570,6 +574,8 @@ final class Transitions {
             if Task.isCancelled { return }
             let elapsed = Date().timeIntervalSince(began)
             let t = min(elapsed / fade, 1)
+            let shown = (t * 100).rounded() / 100
+            if fadeProgress != shown { fadeProgress = shown }
 
             // Ducked equal-power. Plain equal-power parks both songs at -3 dB
             // through the whole middle of the blend, so for several seconds
@@ -949,6 +955,7 @@ final class Transitions {
         watchdog = nil
         handingOver = false
         fading = false
+        fadeProgress = nil
         armedFor = nil
         fadingFrom = nil
         restoreVolume = nil

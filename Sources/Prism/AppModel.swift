@@ -90,6 +90,21 @@ final class AppModel {
     let ambient = AmbientSettings()
 
     #if canImport(AppKit)
+    /// The music as the light hears it. Capture runs only while something that
+    /// uses it holds it open — see `LiveAudio.set`.
+    let liveAudio = LiveAudio()
+    #endif
+
+    /// Where the light reads the music from, on platforms that can hear it.
+    var audioSource: (any AudioBandsSource)? {
+        #if canImport(AppKit)
+        return liveAudio
+        #else
+        return nil
+        #endif
+    }
+
+    #if canImport(AppKit)
     /// The full-screen ambient surface. macOS only: it is a window, and iOS
     /// has nothing for it to cover.
     private var ambientPanel: AmbientPanelController!
@@ -226,7 +241,45 @@ final class AppModel {
             lastAnnounced = track.videoId
             Task { await scrobbler.nowPlaying(track) }
         }
-        if lyricsMode { loadLyrics(for: snap.track) }
+        if lyricsMode || ambientLyricsWanted { loadLyrics(for: snap.track) }
+        refreshNextPalette()
+    }
+
+    // MARK: Locked-mode support
+
+    /// Locked mode is showing lyrics. Lyrics otherwise load only while Now
+    /// Playing's own lyrics toggle is on, which locked mode has nothing to do
+    /// with — so it asks for them in its own right.
+    var ambientLyricsWanted = false {
+        didSet { if ambientLyricsWanted { ensureLyrics() } }
+    }
+
+    func ensureLyrics() { loadLyrics(for: engine.snapshot.track) }
+
+    /// The queue entry that plays after this one, if there is one.
+    var nextEntry: QueueEntry? {
+        let s = engine.snapshot
+        let i = s.queueIndex + 1
+        guard i > 0, i < s.queue.count else { return nil }
+        return s.queue[i]
+    }
+
+    /// The next track's colours, so a transition can hand the light from one
+    /// song to the other. Cached per artwork like the current palette.
+    private(set) var nextPalette: ArtPalette = .fallback
+    private var nextPaletteFor: String?
+    private var nextPaletteTask: Task<Void, Never>?
+
+    private func refreshNextPalette() {
+        let url = nextEntry?.artworkURL
+        guard url != nextPaletteFor else { return }
+        nextPaletteFor = url
+        nextPaletteTask?.cancel()
+        nextPaletteTask = Task {
+            let found = await ArtworkPalette.palette(for: url)
+            guard !Task.isCancelled else { return }
+            nextPalette = found
+        }
     }
 
     // MARK: Lyrics
@@ -518,6 +571,15 @@ final class AppModel {
     }
 
     func refreshPalette(for artworkURL: String?) {
+        // The song that just started is the one a transition was already
+        // blending towards, so its colours are known. Taking them immediately
+        // stops the rim flashing back to the *outgoing* song's colours for the
+        // ~0.7s the fetch-and-animate would otherwise take.
+        if let artworkURL, artworkURL == nextPaletteFor {
+            paletteTask?.cancel()
+            palette = nextPalette
+            return
+        }
         paletteTask?.cancel()
         paletteTask = Task {
             let next = await ArtworkPalette.palette(for: artworkURL)
@@ -760,17 +822,24 @@ final class AppModel {
     /// many tracks, which is why this is so often nil and the light falls back
     /// to breathing rather than inventing a tempo.
     var beatPeriod: Double? {
-        guard ambient.motion == .beat,
-              let id = engine.snapshot.track?.videoId,
+        ambient.motion == .beat ? trackTempo : nil
+    }
+
+    /// The looked-up tempo whatever the motion setting — the flowing line's
+    /// pace when the audio itself is not being heard.
+    var trackTempo: Double? {
+        guard let id = engine.snapshot.track?.videoId,
               let bpm = transitions.analysis.cached(id)?.bpm, bpm > 30
         else { return nil }
         return 60 / bpm
     }
 
-    /// Asks for the tempo of whatever is playing, so beat motion has something
-    /// to work with without waiting for a crossfade to arm.
+    /// Asks for the tempo of whatever is playing, so beat motion and the
+    /// flowing line have something to work with without waiting for a
+    /// crossfade to arm.
     func prefetchTempoIfNeeded() {
-        guard ambient.motion == .beat, let t = engine.snapshot.track else { return }
+        guard ambient.motion == .beat || (ambient.rimGlow && ambient.flow),
+              let t = engine.snapshot.track else { return }
         transitions.analysis.prefetch(videoId: t.videoId, title: t.title,
                                       artist: t.artist,
                                       duration: engine.snapshot.duration)
@@ -801,6 +870,19 @@ final class AppModel {
                 if idle >= ambient.idleSeconds { ambientPanel.present() }
             }
         }
+    }
+    /// When the volume HUD in locked mode was last touched, and what it shows.
+    /// Held locally because snapshots lag a scroll gesture by up to a second,
+    /// and reading the snapshot mid-gesture would make the level jump back.
+    private(set) var volumeHUDAt: Date?
+    private(set) var volumeHUDLevel: Double = 100
+
+    func nudgeVolume(by delta: Double) {
+        let fresh = volumeHUDAt.map { Date().timeIntervalSince($0) < 1.5 } ?? false
+        let base = fresh ? volumeHUDLevel : engine.snapshot.volume
+        volumeHUDLevel = min(max(base + delta, 0), 100)
+        engine.setVolume(volumeHUDLevel)
+        volumeHUDAt = Date()
     }
     #else
     func toggleAmbient() {}

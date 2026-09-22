@@ -369,6 +369,166 @@ check(close(TempoRampPlanner.foldToOctave(of: 90, bpm: 140), 70),
 check(close(TempoRampPlanner.foldToOctave(of: 170, bpm: 85), 170),
       "85 counted against 170 folds up, not down")
 
+// MARK: - Lyric timing
+
+suite("Lyric timing")
+
+let lyricLines = [
+    TimedLine(start: 10, text: "a unbelievable day"),
+    TimedLine(start: 13, text: "second line"),
+    TimedLine(start: 25, text: "after a long break"),
+]
+
+// Word windows tile the line exactly: no gap, no overlap, no overrun.
+let windows = LyricTiming.wordWindows(in: lyricLines, line: 0)
+let windowSum = windows.reduce(0) { $0 + $1.duration }
+check(close(windowSum, LyricTiming.end(of: 0, in: lyricLines) - 10, 1e-9),
+      "estimated word windows sum to the line's sung window")
+check(close(windows[0].start, 10) && close(windows[1].start, windows[0].start + windows[0].duration),
+      "word windows are contiguous from the line's start")
+check(windows[1].duration > windows[0].duration * 5,
+      "a long word is given longer than a one-letter word")
+
+// Line boundaries clamp rather than running past 0 or 1.
+let atStart = LyricTiming.moment(in: lyricLines, at: 10)
+check(atStart.lineIndex == 0 && close(atStart.lineProgress, 0),
+      "progress is 0 at the instant a line starts")
+let late = LyricTiming.moment(in: lyricLines, at: 12.9)
+check(late.lineIndex == 0 && close(late.lineProgress, 1) && late.wordProgress.allSatisfy { close($0, 1) },
+      "progress clamps at 1 once the line's window is over")
+check(LyricTiming.moment(in: lyricLines, at: 3).lineIndex == nil,
+      "before the first line there is no current line")
+
+// Instrumental gaps.
+let inBreak = LyricTiming.moment(in: lyricLines, at: 20)
+check(inBreak.lineIndex == 1 && inBreak.gap != nil,
+      "a silence longer than the threshold is reported as a gap")
+let shortPause = LyricTiming.moment(in: lyricLines, at: 12.9)
+check(shortPause.gap == nil, "a 3-second pause between lines is not a gap")
+let blankBreak = [TimedLine(start: 5, text: "sing"), TimedLine(start: 8, text: ""),
+                  TimedLine(start: 14, text: "again")]
+check(LyricTiming.moment(in: blankBreak, at: 10).gap != nil,
+      "an empty stamped LRC line marks a break")
+
+// Enhanced LRC.
+let enhanced = LRC.parse("[00:10.00]<00:10.00>Hello <00:10.80>there <00:11.50>world")
+check(enhanced.count == 1 && enhanced[0].text == "Hello there world",
+      "word tags are stripped from the displayed text")
+check(enhanced[0].wordStarts == [10.0, 10.8, 11.5],
+      "enhanced LRC word times are kept")
+let exactWindows = LyricTiming.wordWindows(in: enhanced, line: 0)
+check(close(exactWindows[1].start, 10.8) && close(exactWindows[1].duration, 0.7, 1e-9),
+      "exact word times are used instead of the estimate")
+
+let partial = LRC.parse("[00:05.00]Hello <00:05.60>big world")
+check(partial[0].text == "Hello big world" && partial[0].wordStarts == nil,
+      "partial word stamps are dropped rather than half-trusted")
+
+let repeated = LRC.parse("[00:10.00][01:10.00]<00:10.00>la <00:10.50>la")
+check(repeated.count == 2 && repeated[1].wordStarts == [70.0, 70.5],
+      "a repeated line shifts its word stamps to each occurrence")
+
+let plain = LRC.parse("[ar:Someone]\n[00:01.50]first\n[00:03.00]second")
+check(plain.map(\.start) == [1.5, 3.0] && plain.map(\.text) == ["first", "second"],
+      "metadata tags are skipped and plain lines parse as before")
+
+// MARK: - Beat tracking
+
+suite("Beat tracking")
+
+let onsetRate = 93.75      // 48 kHz, 512-sample hop — what LiveAudio feeds it
+
+/// Deterministic noise, so a failure is reproducible.
+struct Noise {
+    var state: UInt64
+    mutating func next() -> Double {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return Double(state >> 11) / Double(1 << 53)
+    }
+}
+
+func clickTrack(bpm: Double, seconds: Double, offbeats: Double = 0,
+                noise: Double = 0.05, seed: UInt64 = 1) -> (TempoTracker, lastBeat: Double) {
+    var tracker = TempoTracker(rate: onsetRate)
+    var rng = Noise(state: seed)
+    let period = 60 / bpm
+    let total = Int(seconds * onsetRate)
+    var lastBeat = 0.0
+    for i in 0..<total {
+        let t = Double(i) / onsetRate
+        let phase = (t + 0.13).truncatingRemainder(dividingBy: period) / period
+        let dt = 1 / onsetRate / period
+        var v = rng.next() * noise
+        if phase < dt { v += 1; lastBeat = t }
+        if offbeats > 0, abs(phase - 0.5) < dt / 2 { v += offbeats }
+        tracker.push(v)
+    }
+    return (tracker, lastBeat)
+}
+
+let (t128, beat128) = clickTrack(bpm: 128, seconds: 9)
+let e128 = t128.estimate()
+check(e128.map { abs($0.period - 60.0 / 128) / (60.0 / 128) < 0.015 } ?? false,
+      "a 128 BPM click is heard as 128 BPM (got \(e128.map { 60 / $0.period } ?? 0))")
+check(e128.map { abs($0.lastBeat - beat128) < 0.025 } ?? false,
+      "the last beat is placed within a sample or two of where it landed")
+check((e128?.confidence ?? 0) > 0.3, "a steady click is heard with confidence")
+
+let (t100, _) = clickTrack(bpm: 100, seconds: 9, offbeats: 0.45, seed: 7)
+let e100 = t100.estimate()
+check(e100.map { abs(60 / $0.period - 100) < 2 } ?? false,
+      "kicks with hi-hats between them read as the kick's tempo, not double "
+      + "(got \(e100.map { 60 / $0.period } ?? 0))")
+
+let (t87, _) = clickTrack(bpm: 87, seconds: 9, seed: 3)
+check(t87.estimate().map { abs(60 / $0.period - 87) < 1.5 } ?? false,
+      "a slow 87 BPM track is not doubled")
+
+var noiseOnly = TempoTracker(rate: onsetRate)
+var noiseRng = Noise(state: 42)
+for _ in 0..<Int(9 * onsetRate) { noiseOnly.push(noiseRng.next()) }
+check((noiseOnly.estimate()?.confidence ?? 0) < 0.15,
+      "noise with no pulse is not trusted (confidence \(noiseOnly.estimate()?.confidence ?? 0))")
+
+var silent = TempoTracker(rate: onsetRate)
+for _ in 0..<Int(9 * onsetRate) { silent.push(0) }
+check(silent.estimate() == nil, "silence has no tempo")
+
+var tooShort = TempoTracker(rate: onsetRate)
+for i in 0..<Int(2 * onsetRate) { tooShort.push(i % 47 == 0 ? 1 : 0) }
+check(tooShort.estimate() == nil, "two seconds is too little to judge a tempo")
+
+// Following.
+func beat(_ period: Double, at t: Double = 10, confidence: Double = 0.5) -> TempoTracker.Beat {
+    TempoTracker.Beat(period: period, lastBeat: t, confidence: confidence)
+}
+var follower = BeatFollower()
+follower.update(beat(0.5))
+check(follower.period == nil, "one reading is not enough to trust a tempo")
+follower.update(beat(0.505, at: 11))
+check(follower.period.map { abs($0 - 0.505) < 1e-9 } ?? false,
+      "a second agreeing reading locks the tempo")
+follower.update(beat(0.25, at: 12))
+check(follower.period.map { abs($0 - 0.505) < 0.01 } ?? false,
+      "a half-period reading is the same pulse, not a new tempo")
+for i in 0..<5 { follower.update(beat(0.505 * 1.5, at: 12.5 + Double(i))) }
+check(follower.period.map { abs($0 - 0.505) < 0.01 } ?? false,
+      "a run of triplet-feel (3:2) readings does not replace the tempo")
+follower.update(beat(0.6, at: 13)); follower.update(beat(0.6, at: 14))
+check(follower.period.map { $0 < 0.55 } ?? false,
+      "two readings of a different tempo do not yet replace it")
+follower.update(beat(0.6, at: 15))
+check(follower.period.map { abs($0 - 0.6) < 1e-9 } ?? false,
+      "a new tempo that holds for three readings takes over")
+let anchorBefore = follower.anchor
+follower.update(beat(0.6, at: 15.0 + 0.6 * 4 + 0.1))
+check(abs(follower.anchor - (anchorBefore + 0.6 * 4 + 0.035)) < 1e-6,
+      "a beat heard 0.1s late moves the grid 35% of the way, not all of it")
+follower.update(beat(0.6, confidence: 0.05))
+check(follower.period != nil, "one unsure reading does not drop the tempo")
+for _ in 0..<3 { follower.update(nil) }
+check(follower.period == nil, "four readings with no pulse drop the tempo")
+
 // MARK: - Result
 
 print("\n\(checks - failures.count)/\(checks) passed")
