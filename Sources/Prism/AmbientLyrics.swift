@@ -43,7 +43,7 @@ struct AmbientLyricsView: View {
 
     private func timed(_ lines: [TimedLine], source: String) -> some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { tl in
-            let time = model.engine.smoothTime(at: tl.date)
+            let time = model.lyricsTime(at: tl.date)
             let frame = LyricFrame(lines: lines,
                                    moment: LyricTiming.moment(in: lines, at: time),
                                    time: time, accent: model.palette.accent,
@@ -475,7 +475,7 @@ struct UntimedLyrics: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.5)) { tl in
             let d = model.engine.snapshot.duration
-            let t = model.engine.smoothTime(at: tl.date)
+            let t = model.lyricsTime(at: tl.date)
             let lines = lyrics.lines.filter { !$0.text.isEmpty }
             let at = d > 0 && !lines.isEmpty ? Int(Double(lines.count) * t / d) : 0
             VStack(spacing: 14) {

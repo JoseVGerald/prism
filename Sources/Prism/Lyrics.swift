@@ -34,7 +34,9 @@ struct Lyrics {
         var found: Int?
         for (i, l) in lines.enumerated() {
             guard let t = l.at else { continue }
-            if t <= time + 0.25 { found = i } else { break }
+            // No lead: lighting a line a quarter-second early read as the
+            // lyrics running fast.
+            if t <= time { found = i } else { break }
         }
         return found
     }

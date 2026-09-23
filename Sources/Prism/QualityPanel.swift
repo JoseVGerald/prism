@@ -117,6 +117,12 @@ struct SettingsPanel: View {
                     .labelsHidden()
                     .fixedSize()
                 }
+                labelled("Lyrics timing", lyricsDelayLabel) {
+                    Slider(value: Binding(get: { ambient.lyricsDelay },
+                                          set: { ambient.lyricsDelay = ($0 * 20).rounded() / 20 }),
+                           in: -0.5...1.0)
+                }
+                .padding(.top, 6)
                 Text(ambient.lyricStyle == .random
                      ? "A different style for each song in locked mode — click the cover there to show them."
                      : "How lyrics move in locked mode — click the cover there to show them.")
@@ -156,7 +162,7 @@ struct SettingsPanel: View {
             Divider().opacity(0.5)
             VStack(alignment: .leading, spacing: 5) {
                 Button("Show ambient now") { model.toggleAmbient() }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHit)
                     .font(.callout.weight(.medium))
                     .padding(.horizontal, 14).padding(.vertical, 7)
                     .glassEffect(.regular.interactive(), in: .capsule)
@@ -188,6 +194,12 @@ struct SettingsPanel: View {
                  + "screen capture, so the recording indicator shows while the light "
                  + "is on screen. Locked mode always reacts this way."
         }
+    }
+
+    private var lyricsDelayLabel: String {
+        let d = ambient.lyricsDelay
+        if abs(d) < 0.025 { return "On time" }
+        return String(format: "%.2fs %@", abs(d), d > 0 ? "later" : "earlier")
     }
 
     private var idleLabel: String {
@@ -292,7 +304,7 @@ struct SettingsPanel: View {
                 } label: {
                     Image(systemName: "arrow.clockwise").font(.caption)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHit)
                 .help("Re-read what the player is pulling down")
             }
 

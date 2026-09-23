@@ -57,6 +57,8 @@ struct PrismApp: App {
                     .keyboardShortcut("4", modifiers: .command)
                 Button("Listening") { model.route = .dashboard }
                     .keyboardShortcut("5", modifiers: .command)
+                Button("Downloads") { model.route = .downloads }
+                    .keyboardShortcut("6", modifiers: .command)
                 Divider()
                 Button(model.lyricsMode ? "Hide Lyrics" : "Lyrics") { model.toggleLyrics() }
                     .keyboardShortcut("l", modifiers: .command)

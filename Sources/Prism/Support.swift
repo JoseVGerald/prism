@@ -240,10 +240,31 @@ struct PressableButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            // The whole frame takes the click, padding included. Without it a
+            // button only answers on its drawn pixels — a sidebar row was
+            // clickable on its words and icon and dead everywhere else.
+            .contentShape(Rectangle())
             .scaleEffect(configuration.isPressed ? pressedScale : 1)
             .animation(.spring(response: 0.22, dampingFraction: 0.55),
                        value: configuration.isPressed)
     }
+}
+
+/// `.plain`, but clickable across its whole frame, with a touch of feedback.
+///
+/// SwiftUI's plain style only hit-tests what the label draws, so a padded
+/// capsule answered on its text and ignored clicks on its own padding — the
+/// "sometimes the buttons don't press" feeling. Used everywhere `.plain` was.
+struct PlainHitButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.72 : 1)
+    }
+}
+
+extension ButtonStyle where Self == PlainHitButtonStyle {
+    static var plainHit: PlainHitButtonStyle { PlainHitButtonStyle() }
 }
 
 /// What a button does with its icon when it fires.

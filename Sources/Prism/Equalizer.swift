@@ -17,7 +17,7 @@ struct EqualizerView: View {
     /// Frames per second. Every frame costs a full layout and vibrancy pass of
     /// whatever view hosts it, so the menu-bar chip — three columns, 26pt wide —
     /// is not worth the same rate as the pair either side of the cover art.
-    var fps: Double = 20
+    var fps: Double = 15
 
     var body: some View {
         // One Canvas, no SwiftUI blur. Blurred glow layers meant an offscreen
@@ -27,6 +27,11 @@ struct EqualizerView: View {
         TimelineView(.animation(minimumInterval: 1.0 / fps, paused: !isPlaying)) { tl in
             blocks(tl.date.timeIntervalSinceReferenceDate)
         }
+        // Painted by Metal rather than on the CPU. Profiled with the window in
+        // front, these two equalizers were the main thread's largest cost —
+        // hundreds of blocks a frame rasterised in software — enough to delay
+        // clicks. Stepped LED bars also lose nothing at 15fps.
+        .drawingGroup()
         .allowsHitTesting(false)
     }
 

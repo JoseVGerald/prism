@@ -280,6 +280,8 @@ private struct SignInChrome: View {
 
 private struct Sidebar: View {
     @Bindable var model: AppModel
+    /// Lets the highlight glide to the chosen row instead of jumping.
+    @Namespace private var selection
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -297,7 +299,7 @@ private struct Sidebar: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHit)
             .help("For You")
             .padding(.horizontal, 11).padding(.top, 7).padding(.bottom, 11)
 
@@ -309,6 +311,7 @@ private struct Sidebar: View {
                 model.loadLibraryIfNeeded()
             }
             item("Listening", "chart.bar", isActive(.dashboard)) { model.route = .dashboard }
+            item("Downloads", "arrow.down.circle", isActive(.downloads)) { model.route = .downloads }
 
             Spacer()
 
@@ -323,7 +326,7 @@ private struct Sidebar: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 12).padding(.vertical, 9)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHit)
                 .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 10))
             }
 
@@ -364,8 +367,10 @@ private struct Sidebar: View {
             if active {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(.white.opacity(0.14))
+                    .matchedGeometryEffect(id: "sidebar.selection", in: selection)
             }
         }
+        .animation(.spring(response: 0.3, dampingFraction: 0.82), value: active)
         .hoverBloom(scale: 1.02, radius: 10, opacity: 0.3)
     }
 }
@@ -412,7 +417,7 @@ private struct IconRail: View {
                 .foregroundStyle(active ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                 .frame(width: 36, height: 32)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
         .background {
             if active {
                 RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.16))

@@ -182,7 +182,7 @@ struct DashboardPane: View {
                         }
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHit)
                 }
             }
             .padding(14)

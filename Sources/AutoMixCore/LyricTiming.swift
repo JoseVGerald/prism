@@ -50,9 +50,10 @@ public enum LyricTiming {
     /// Longest a line is allowed to be sung over. Past this the next line's
     /// start is usually after a held note or a break, not more singing.
     public static let maxLineSpan: Double = 8
-    /// Breath left before the next line, so the fill finishes slightly early
-    /// rather than dragging into the following line.
-    public static let tail: Double = 0.35
+    /// Breath left before the next line, so the fill finishes just before it
+    /// rather than dragging into it. Was 0.35s, which with the estimate below
+    /// deciding every line made the fill run visibly ahead of the singer.
+    public static let tail: Double = 0.15
     /// A silence longer than this between lines is shown as an instrumental.
     public static let gapThreshold: Double = 6
 
@@ -75,9 +76,16 @@ public enum LyricTiming {
     /// breath) and how long this many words plausibly take.
     public static func end(of i: Int, in lines: [TimedLine]) -> Double {
         let start = lines[i].start
-        var stop = start + sungEstimate(lines[i].text)
-        if i + 1 < lines.count { stop = min(stop, lines[i + 1].start - tail) }
-        return max(stop, start + 0.2)
+        let estimate = sungEstimate(lines[i].text)
+        guard i + 1 < lines.count else { return start + estimate }
+        let untilNext = lines[i + 1].start - tail
+        // The estimate only decides when the next line is far off — a break,
+        // not more singing. Otherwise the line is sung up to the next one:
+        // singers stretch a line to fill its time far more often than they
+        // rush it, and letting the estimate cut every line short is what made
+        // the fill finish ahead of the voice.
+        let stop = untilNext - start <= estimate * 1.8 ? untilNext : start + estimate
+        return max(min(stop, start + maxLineSpan), start + 0.2)
     }
 
     /// Start and duration of every word in line `i`.

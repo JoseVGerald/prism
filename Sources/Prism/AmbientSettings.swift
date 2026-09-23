@@ -60,6 +60,7 @@ final class AmbientSettings {
         static let pulse = "prism.ambient.pulse"
         static let lyricStyle = "prism.ambient.lyricStyle"
         static let flow = "prism.ambient.flow"
+        static let lyricsDelay = "prism.lyrics.delay"
     }
 
     /// The rim of light around the window. On by default — it is the feature.
@@ -80,6 +81,9 @@ final class AmbientSettings {
     var lyricStyle: LyricStyle { didSet { store(lyricStyle.rawValue, Key.lyricStyle) } }
     /// A light that keeps running round the rim at the song's tempo.
     var flow: Bool { didSet { store(flow, Key.flow) } }
+    /// Seconds the lyrics are held back (negative brings them forward), for
+    /// when a source's timing sits early or late for this Mac's audio path.
+    var lyricsDelay: Double { didSet { store(lyricsDelay, Key.lyricsDelay) } }
 
     /// Whether the full-screen ambient surface is up right now. Not persisted:
     /// a restart should never come back into it.
@@ -102,5 +106,8 @@ final class AmbientSettings {
         pulse = d.object(forKey: Key.pulse) as? Double ?? 0.38
         lyricStyle = LyricStyle(rawValue: d.string(forKey: Key.lyricStyle) ?? "") ?? .prism
         flow = d.object(forKey: Key.flow) as? Bool ?? true
+        // A tenth of a second late by default: reported running slightly
+        // ahead even after the clock and pacing fixes.
+        lyricsDelay = d.object(forKey: Key.lyricsDelay) as? Double ?? 0.1
     }
 }

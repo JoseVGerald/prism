@@ -55,7 +55,7 @@ struct ForYouPane: View {
                 .font(.callout).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Button("Find something to play") { model.route = .search }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHit)
                 .font(.callout.weight(.medium))
                 .padding(.horizontal, 16).padding(.vertical, 9)
                 .glassEffect(.regular.interactive(), in: .capsule)
@@ -121,7 +121,7 @@ struct ForYouPane: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14).padding(.vertical, 12)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHit)
                 .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 13))
             }
         }
@@ -172,7 +172,7 @@ private struct PlayCard: View {
             .frame(width: 128, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.15), value: hovering)
     }

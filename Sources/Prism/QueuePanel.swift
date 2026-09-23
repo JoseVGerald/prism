@@ -184,19 +184,20 @@ private struct QueueRow: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHit)
 
             HStack(spacing: 5) {
                     // Queue items are where YouTube actually exposes the
                     // offline-download action, so it belongs here.
                     Button {
-                        model.download(videoId: entry.videoId, title: entry.title)
+                        model.download(videoId: entry.videoId, title: entry.title,
+                                       artist: entry.artist, artworkURL: entry.artworkURL)
                     } label: {
                         Image(systemName: "arrow.down")
                             .font(.system(size: 10, weight: .semibold))
                             .frame(width: 22, height: 22)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHit)
                     .glassEffect(.regular.interactive(), in: .circle)
                     .help("Download for offline")
 
@@ -207,7 +208,7 @@ private struct QueueRow: View {
                             .font(.system(size: 10, weight: .semibold))
                             .frame(width: 22, height: 22)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHit)
                 .glassEffect(.regular.interactive(), in: .circle)
                 .help("Remove from queue")
             }
@@ -251,7 +252,8 @@ private struct QueueRow: View {
             Divider()
             Divider()
             Button("Download for Offline") {
-                model.download(videoId: entry.videoId, title: entry.title)
+                model.download(videoId: entry.videoId, title: entry.title,
+                                       artist: entry.artist, artworkURL: entry.artworkURL)
             }
             Button("Remove from Queue", role: .destructive) {
                 model.removeFromQueue(entry)

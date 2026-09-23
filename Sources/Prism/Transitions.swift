@@ -135,7 +135,7 @@ final class Transitions {
     /// works the position out from the clock every frame, so its picture moves
     /// smoothly with the audio, and no view is invalidated by the 40ms loop.
     /// Past its length it reads as 1 — held through the handover.
-    private(set) var fadeClock: (began: Date, length: Double)?
+    private(set) var fadeClock: (began: Date, length: Double, from: String?)?
     /// Why the last transition was not a crossfade, for the UI to surface.
     private(set) var lastProblem: String?
 
@@ -571,7 +571,7 @@ final class Transitions {
         // ended before the ramp finished. Reading the clock keeps the fade the
         // length it claims to be however slow the bridge is.
         let began = Date()
-        fadeClock = (began, fade)
+        fadeClock = (began, fade, fadingFrom)
         var lastTraced = -1.0
         while true {
             if Task.isCancelled { return }

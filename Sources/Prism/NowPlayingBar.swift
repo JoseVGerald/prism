@@ -101,7 +101,7 @@ struct NowPlayingBar: View {
                 Image(systemName: volumeIcon).font(.system(size: 12))
                     .frame(width: 20)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHit)
             Slider(value: $volume, in: 0...100) { editing in
                 if !editing { engine.setVolume(volume) }
             }

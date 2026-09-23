@@ -10,7 +10,7 @@ struct LyricsToggle: View {
                 .font(.caption.weight(.medium))
                 .padding(.horizontal, 13).padding(.vertical, 7)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
         .glassEffect(.regular.interactive(), in: .capsule)
         .hoverBloom()
         .help(model.lyricsMode ? "Back to the artwork" : "Show lyrics")
@@ -52,7 +52,7 @@ struct LyricsView: View {
             if let lyrics = model.lyrics, lyrics.synced {
                 TimelineView(.periodic(from: .now, by: 0.05)) { tl in
                     Color.clear
-                        .onChange(of: lyrics.index(at: model.engine.smoothTime(at: tl.date)),
+                        .onChange(of: lyrics.index(at: model.lyricsTime(at: tl.date)),
                                   initial: true) { _, now in active = now }
                 }
             }

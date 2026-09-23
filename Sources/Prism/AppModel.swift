@@ -10,6 +10,7 @@ enum Route: Hashable {
     case search
     case library
     case dashboard
+    case downloads
     case detail(browseId: String, title: String)
 }
 
@@ -24,6 +25,7 @@ final class AppModel {
     let audio = AudioOutput()
     #endif
     let scrobbler = Scrobbler()
+    let downloads = DownloadLog()
 
     /// Progress and outcome of a Takeout import, for the dashboard to show.
     var importStatus: String?
@@ -865,6 +867,11 @@ final class AppModel {
         ambient.motion == .beat ? trackTempo : nil
     }
 
+    /// Where the lyrics are: the playback clock less the chosen delay.
+    func lyricsTime(at date: Date = Date()) -> Double {
+        engine.smoothTime(at: date) - ambient.lyricsDelay
+    }
+
     /// The looked-up tempo whatever the motion setting — the flowing line's
     /// pace when the audio itself is not being heard.
     var trackTempo: Double? {
@@ -934,10 +941,16 @@ final class AppModel {
         flash("Shuffled the queue")
     }
 
-    func download(_ track: Track) { download(videoId: track.videoId, title: track.title) }
+    func download(_ track: Track) {
+        download(videoId: track.videoId, title: track.title, artist: track.artist,
+                 artworkURL: track.artworkURL)
+    }
 
-    func download(videoId: String, title: String) {
+    func download(videoId: String, title: String, artist: String = "", artworkURL: String? = nil) {
         status = "Downloading \(title)…"
+        downloads.note(DownloadRecord(videoId: videoId, title: title, artist: artist,
+                                      artworkURL: artworkURL, requestedAt: Date(),
+                                      status: .requested))
         Task {
             do {
                 let r = try await engine.download(videoId: videoId)
@@ -947,10 +960,26 @@ final class AppModel {
                 if r.supported && r.ok {
                     flash("Download requested: \(title)")
                 } else {
+                    downloads.set(videoId, r.supported ? .failed : .unavailable,
+                                  note: r.reason.isEmpty ? nil : r.reason)
                     flash(r.reason.isEmpty ? "Download failed." : r.reason)
                 }
             } catch {
+                downloads.set(videoId, .failed, note: error.localizedDescription)
                 flash("Download error: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Cancels a download on YouTube and marks it so here.
+    func removeDownload(_ record: DownloadRecord) {
+        Task {
+            let r = try? await engine.download(videoId: record.videoId, remove: true)
+            if r?.supported == true && r?.ok == true {
+                downloads.set(record.videoId, .removed)
+                flash("Cancelled the download of \(record.title)")
+            } else {
+                flash(r?.reason.isEmpty == false ? r!.reason : "Couldn't cancel that download.")
             }
         }
     }

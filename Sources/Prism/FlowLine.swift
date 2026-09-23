@@ -8,10 +8,10 @@ import QuartzCore
 /// measured ~20% CPU — the canvas is rasterised on the CPU into a
 /// window-sized bitmap every frame — and still ~11% with `drawingGroup()`,
 /// from SwiftUI re-evaluating the view sixty times a second. Here the render
-/// server moves it: one glowing bead follows a keyframed path round the rim,
-/// a replicator makes the tail from delayed copies of it, and the beat's surge
-/// is baked into the keyframe timing. Prism's own work is a rebuild when the
-/// tempo changes and a 20 Hz glance at the audio for hits.
+/// server moves it: a tapering snake of stacked strokes whose ends are
+/// keyframed round the rim, with the beat's surge baked into the keyframe
+/// timing. Prism's own work is a rebuild when the tempo changes and a 20 Hz
+/// glance at the audio for hits.
 struct FlowLine: View {
     var accent: Color
     var playing: Bool
@@ -133,13 +133,18 @@ final class FlowHostView: UIView {
 
 final class FlowLayer: CALayer {
 
-    /// The tail: strokes of the same rim, each shorter, brighter and whiter
-    /// than the one beneath, so together they taper into a comet. Real strokes
-    /// rather than a replicated dot, which at full-screen speeds spread into
-    /// visible beads.
+    /// The snake: strokes of the same rim, each a little shorter, wider and
+    /// whiter than the one beneath, so together they taper smoothly from a
+    /// thick bright head to a thin fading tail. Flat ends, not round: seven
+    /// round-capped strands read as circles stacked on circles.
     private var tails: [CAShapeLayer] = []
-    /// The head's glow, which swells on the beat and on a hit.
-    private let bloom = CALayer()
+    /// A soft wider stroke under the front of the body; brightens on the beat
+    /// and on a hit.
+    private let glowStrand = CAShapeLayer()
+    /// Everything that pulses together on the beat.
+    private let snake = CALayer()
+    /// A round head exactly as wide as the body — the only curve at the front.
+    private let headDot = CALayer()
 
     private var settings: FlowSettings?
     private var rim: Rim?
@@ -148,19 +153,20 @@ final class FlowLayer: CALayer {
     private var lastOnset: Date?
     private var built: Built?
 
-    /// (length as a share of the whole tail, width × thickness, whiteness, opacity),
-    /// faintest and longest first.
-    private static let strands: [(length: Double, width: CGFloat, white: Double, alpha: Float)] = [
-        (1.00, 5.0, 0.00, 0.07),
-        (0.90, 3.2, 0.00, 0.14),
-        (0.76, 2.1, 0.10, 0.30),
-        (0.60, 1.5, 0.25, 0.55),
-        (0.42, 1.2, 0.50, 0.80),
-        (0.24, 1.3, 0.80, 0.95),
-        (0.08, 1.7, 1.00, 1.00),
-    ]
-    /// The whole tail, as a share of a lap.
-    static let tailLength = 0.13
+    /// (length as a share of the whole body, width × thickness, whiteness),
+    /// longest and thinnest first. Fourteen small steps rather than seven big
+    /// ones, so the taper reads as one line.
+    private static let strands: [(length: Double, width: CGFloat, white: Double)] =
+        (0..<14).map { i in
+            let k = Double(i) / 13
+            return (1 - 0.9 * k, CGFloat(0.5 + 1.6 * k), 0.9 * k * k)
+        }
+    /// Each strand's opacity. Where all fourteen overlap, at the head, the
+    /// body is nearly solid; the tail is one strand, and faint.
+    private static let strandAlpha: Float = 0.26
+    private static var bodyWidth: CGFloat { strands.map(\.width).max() ?? 2 }
+    /// The whole body, as a share of a lap.
+    static let tailLength = 0.14
     static let beatsPerLap = 8
     static let keyframes = 480
 
@@ -182,16 +188,22 @@ final class FlowLayer: CALayer {
 
     override init() {
         super.init()
-        for s in Self.strands {
+        addSublayer(snake)
+        glowStrand.fillColor = nil
+        glowStrand.lineCap = .butt
+        glowStrand.lineJoin = .round
+        glowStrand.opacity = 0.1
+        snake.addSublayer(glowStrand)
+        for _ in Self.strands {
             let l = CAShapeLayer()
             l.fillColor = nil
-            l.lineCap = .round
+            l.lineCap = .butt
             l.lineJoin = .round
-            l.opacity = s.alpha
-            addSublayer(l)
+            l.opacity = Self.strandAlpha
+            snake.addSublayer(l)
             tails.append(l)
         }
-        addSublayer(bloom)
+        snake.addSublayer(headDot)
     }
     override init(layer: Any) { super.init(layer: layer) }
     required init?(coder: NSCoder) { fatalError() }
@@ -261,7 +273,8 @@ final class FlowLayer: CALayer {
         // loop starts is still one unbroken stroke.
         let path = r.path(laps: 3)
         withoutActions {
-            for l in tails {
+            snake.frame = bounds
+            for l in tails + [glowStrand] {
                 l.frame = bounds
                 l.path = path
                 l.contentsScale = contentsScale
@@ -271,20 +284,22 @@ final class FlowLayer: CALayer {
 
     private func restyle() {
         guard let s = settings else { return }
-        let scale = contentsScale
+        func tint(_ w: Double) -> CGColor {
+            CGColor(red: s.accent.r + (1 - s.accent.r) * w,
+                    green: s.accent.g + (1 - s.accent.g) * w,
+                    blue: s.accent.b + (1 - s.accent.b) * w, alpha: 1)
+        }
         withoutActions {
             for (l, strand) in zip(tails, Self.strands) {
-                let w = strand.white
                 l.lineWidth = s.thickness * strand.width
-                l.strokeColor = CGColor(red: s.accent.r + (1 - s.accent.r) * w,
-                                        green: s.accent.g + (1 - s.accent.g) * w,
-                                        blue: s.accent.b + (1 - s.accent.b) * w, alpha: 1)
+                l.strokeColor = tint(strand.white)
             }
-            let bloomSize = s.thickness * 16
-            bloom.bounds = CGRect(x: 0, y: 0, width: bloomSize, height: bloomSize)
-            bloom.contents = Self.glow(diameter: bloomSize, scale: scale,
-                                       edge: (s.accent.r, s.accent.g, s.accent.b))
-            bloom.contentsScale = scale
+            glowStrand.lineWidth = s.thickness * 6
+            glowStrand.strokeColor = tint(0)
+            let d = s.thickness * Self.bodyWidth
+            headDot.bounds = CGRect(x: 0, y: 0, width: d, height: d)
+            headDot.cornerRadius = d / 2
+            headDot.backgroundColor = tint(0.9)
         }
     }
 
@@ -296,8 +311,9 @@ final class FlowLayer: CALayer {
             if let b = built {
                 built = Built(start: b.head(at: now), begin: now, lap: b.lap, surge: 0)
             }
-            tails.forEach { $0.removeAllAnimations() }
-            bloom.removeAllAnimations()
+            (tails + [glowStrand]).forEach { $0.removeAllAnimations() }
+            headDot.removeAllAnimations()
+            snake.removeAllAnimations()
             return
         }
         let looked: (period: Double, anchor: CFTimeInterval)? =
@@ -344,7 +360,7 @@ final class FlowLayer: CALayer {
             #endif
         }
 
-        let beginLocal = bloom.convertTime(begin, from: nil)
+        let beginLocal = headDot.convertTime(begin, from: nil)
         func keyed(_ path: String, _ values: [Any]) -> CAKeyframeAnimation {
             let a = CAKeyframeAnimation(keyPath: path)
             a.values = values
@@ -358,24 +374,30 @@ final class FlowLayer: CALayer {
 
         withoutActions {
             opacity = s.playing ? 1 : 0.4
-            bloom.position = rim.point(at: start)
+            headDot.position = rim.point(at: start)
         }
         let ends = heads.map { NSNumber(value: (1 + $0) / 3) }
-        for (l, strand) in zip(tails, Self.strands) {
-            let length = Self.tailLength * strand.length
-            let starts = zip(heads, stretch).map { NSNumber(value: (1 + $0 - length * $1) / 3) }
-            l.add(keyed("strokeEnd", ends), forKey: "end")
-            l.add(keyed("strokeStart", starts), forKey: "start")
+        func starts(_ length: Double) -> [NSNumber] {
+            zip(heads, stretch).map { NSNumber(value: (1 + $0 - length * $1) / 3) }
         }
-        bloom.add(keyed("position", points), forKey: "flow")
-        bloom.add(pulseAnimation(beat: folded?.period, depth: s.depth, begin: beginLocal),
-                  forKey: "pulse")
+        for (l, strand) in zip(tails, Self.strands) {
+            l.add(keyed("strokeEnd", ends), forKey: "end")
+            l.add(keyed("strokeStart", starts(Self.tailLength * strand.length)), forKey: "start")
+        }
+        glowStrand.add(keyed("strokeEnd", ends), forKey: "end")
+        glowStrand.add(keyed("strokeStart", starts(Self.tailLength * 0.6)), forKey: "start")
+        headDot.add(keyed("position", points), forKey: "flow")
+        let pulse = pulseAnimations(beat: folded?.period, depth: s.depth, begin: beginLocal)
+        snake.add(pulse.body, forKey: "pulse")
+        glowStrand.add(pulse.glow, forKey: "pulse")
     }
 
-    /// The bloom swells on each beat and decays over it — a struck note, sharp
-    /// on purpose: this is what says "beat". With no beat, it breathes.
-    private func pulseAnimation(beat: Double?, depth: Double,
-                                begin: CFTimeInterval) -> CAAnimationGroup {
+    /// On each beat the snake brightens and decays over the beat — a struck
+    /// note, sharp on purpose: this is what says "beat" — and the glow under
+    /// it swells more. Brightness, not size: growing a circle at the head on
+    /// every beat was the "circles" look. With no beat, it breathes.
+    private func pulseAnimations(beat: Double?, depth: Double,
+                                 begin: CFTimeInterval) -> (body: CAAnimation, glow: CAAnimation) {
         let steps = 12
         let breathing = beat == nil
         func shape(_ t: Double) -> Double {
@@ -383,28 +405,29 @@ final class FlowLayer: CALayer {
         }
         let d = max(depth, 0.15)
         let env: [Double] = (0...steps).map { shape(Double($0) / Double(steps)) }
-        let fade = CAKeyframeAnimation(keyPath: "opacity")
-        fade.values = env.map { e -> NSNumber in NSNumber(value: 0.45 + 0.55 * ((1 - d) + d * e)) }
-        let grow = CAKeyframeAnimation(keyPath: "transform.scale")
-        grow.values = env.map { e -> NSNumber in NSNumber(value: 0.8 + 0.7 * d * e) }
-        let group = CAAnimationGroup()
-        group.animations = [fade, grow]
-        group.duration = beat ?? 7.4
-        group.repeatCount = .infinity
-        group.beginTime = breathing ? bloom.convertTime(CACurrentMediaTime(), from: nil) : begin
-        group.isRemovedOnCompletion = false
-        return group
+        func repeating(_ values: [NSNumber]) -> CAKeyframeAnimation {
+            let a = CAKeyframeAnimation(keyPath: "opacity")
+            a.values = values
+            a.duration = beat ?? 7.4
+            a.repeatCount = .infinity
+            a.beginTime = breathing ? headDot.convertTime(CACurrentMediaTime(), from: nil) : begin
+            a.isRemovedOnCompletion = false
+            return a
+        }
+        let body = repeating(env.map { e -> NSNumber in NSNumber(value: 0.7 + 0.3 * ((1 - d) + d * e)) })
+        let glow = repeating(env.map { e -> NSNumber in NSNumber(value: 0.06 + 0.22 * d * e) })
+        return (body, glow)
     }
 
-    /// A hit: the head flashes bigger for a moment, on top of the beat pulse.
+    /// A hit: the glow under the snake flashes, on top of the beat pulse.
     private func flare() {
-        let a = CABasicAnimation(keyPath: "transform.scale")
+        let a = CABasicAnimation(keyPath: "opacity")
         a.isAdditive = true
-        a.fromValue = 0.9
+        a.fromValue = 0.3
         a.toValue = 0
         a.duration = 0.35
         a.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        bloom.add(a, forKey: "flare")
+        glowStrand.add(a, forKey: "flare")
     }
 
     // MARK: Pace
@@ -457,26 +480,6 @@ final class FlowLayer: CALayer {
         CATransaction.setDisableActions(true)
         body()
         CATransaction.commit()
-    }
-
-    /// A round glow: white at the centre, through the colour, to nothing.
-    static func glow(diameter: CGFloat, scale: CGFloat,
-                     edge: (Double, Double, Double)) -> CGImage? {
-        let px = max(Int(diameter * scale), 4)
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8,
-                                  bytesPerRow: 0, space: space,
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return nil }
-        let colours = [CGColor(red: 1, green: 1, blue: 1, alpha: 1),
-                       CGColor(red: edge.0, green: edge.1, blue: edge.2, alpha: 0.55),
-                       CGColor(red: edge.0, green: edge.1, blue: edge.2, alpha: 0)] as CFArray
-        guard let gradient = CGGradient(colorsSpace: space, colors: colours,
-                                        locations: [0, 0.1, 1]) else { return nil }
-        let c = CGPoint(x: CGFloat(px) / 2, y: CGFloat(px) / 2)
-        ctx.drawRadialGradient(gradient, startCenter: c, startRadius: 0,
-                               endCenter: c, endRadius: CGFloat(px) / 2, options: [])
-        return ctx.makeImage()
     }
 }
 

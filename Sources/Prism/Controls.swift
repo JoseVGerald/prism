@@ -31,7 +31,7 @@ struct OutputPicker: View {
             .padding(.horizontal, 11).padding(.vertical, 7)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
         .help("Where the sound goes")
         .popover(isPresented: $open, arrowEdge: .trailing) {
             VStack(alignment: .leading, spacing: 1) {
@@ -57,7 +57,7 @@ struct OutputPicker: View {
                         .padding(.horizontal, 10).padding(.vertical, 7)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHit)
                 }
                 if audio.devices.isEmpty {
                     Text("No outputs found").font(.callout)
@@ -106,7 +106,7 @@ struct UndoButton: View {
                     .font(.system(size: 12))
                     .frame(width: 28, height: 28)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHit)
             .glassEffect(.regular.interactive(), in: .circle)
             #if canImport(AppKit)
             .help("Undo \(label) (⌘Z)")

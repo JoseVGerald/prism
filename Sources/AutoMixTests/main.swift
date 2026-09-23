@@ -432,6 +432,11 @@ let plain = LRC.parse("[ar:Someone]\n[00:01.50]first\n[00:03.00]second")
 check(plain.map(\.start) == [1.5, 3.0] && plain.map(\.text) == ["first", "second"],
       "metadata tags are skipped and plain lines parse as before")
 
+// Pacing: a line is sung up to the next one unless the next is far away.
+let paced = [TimedLine(start: 10, text: "hold me closer now"), TimedLine(start: 13.5, text: "next")]
+check(close(LyricTiming.end(of: 0, in: paced), 13.5 - LyricTiming.tail, 1e-9),
+      "a line with the next 3.5s away fills right up to it, not to a length estimate")
+
 // MARK: - Beat tracking
 
 suite("Beat tracking")

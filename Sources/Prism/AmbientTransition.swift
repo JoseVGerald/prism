@@ -13,8 +13,14 @@ enum AmbientTransition {
     /// 0…1, or nil when no hand-over is under way.
     @MainActor
     static func progress(model: AppModel, at date: Date, handover: Handover) -> Double? {
+        let current = model.engine.snapshot.track?.videoId
         let raw: Double? = {
             if let clock = model.transitions.fadeClock {
+                // The fade outlives its song by a second or two while the two
+                // players are lined up. Once the song it fades *from* is gone
+                // the hand-over is over as far as the picture goes — read on,
+                // it looked like a finished fade into whatever is next now.
+                guard clock.from == nil || clock.from == current else { return nil }
                 return min(max(date.timeIntervalSince(clock.began) / clock.length, 0), 1)
             }
             guard model.nextEntry != nil else { return nil }
@@ -49,6 +55,10 @@ enum AmbientTransition {
         private(set) var incomingPalette: ArtPalette = .fallback
         private var outgoing: String?
         private var holdingSince: Date?
+        /// Set when a hand-over completes; nothing new is pinned until the
+        /// progress has been idle once, so a finished hand-over can never be
+        /// mistaken for the start of the next one.
+        private var settling = false
 
         var holding: Bool { holdingSince != nil }
 
@@ -62,10 +72,12 @@ enum AmbientTransition {
                 guard current == target || moved || date.timeIntervalSince(since) > 4 else { return 1 }
                 holdingSince = nil
                 incoming = nil
+                settling = true
                 return nil
             }
 
-            guard let raw, raw > 0 else { incoming = nil; return raw }
+            guard let raw, raw > 0 else { incoming = nil; settling = false; return raw }
+            if settling { return nil }
             if incoming == nil, let next = model.nextEntry, next.videoId != current {
                 incoming = next
                 outgoing = current

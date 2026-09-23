@@ -4,22 +4,32 @@ struct ContentPane: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        Group {
-            switch model.route {
-            case .forYou:     ForYouPane(model: model)
-            case .nowPlaying: NowPlayingPane(model: model)
-            case .search:     SearchPane(model: model)
-            case .library:    LibraryPane(model: model)
-            case .dashboard:  DashboardPane(model: model)
-            case .detail(_, let title): DetailPane(model: model, title: title)
-            }
+        // Pages cross over in a fifth of a second rather than cutting.
+        ZStack {
+            page
+                .id(model.route)
+                .transition(.opacity.combined(with: .scale(scale: 0.985)))
         }
+        .animation(.smooth(duration: 0.22), value: model.route)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Clip before the glass so scroll content cannot escape the panel.
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         // Glass off in video mode: the sidebar and queue stay frosted, this
         // pane goes clear, and the picture reads sharply through the middle.
         .modifier(PaneGlass(enabled: !model.videoMode))
+    }
+
+    @ViewBuilder
+    private var page: some View {
+        switch model.route {
+        case .forYou:     ForYouPane(model: model)
+        case .nowPlaying: NowPlayingPane(model: model)
+        case .search:     SearchPane(model: model)
+        case .library:    LibraryPane(model: model)
+        case .dashboard:  DashboardPane(model: model)
+        case .downloads:  DownloadsPane(model: model)
+        case .detail(_, let title): DetailPane(model: model, title: title)
+        }
     }
 }
 
@@ -231,7 +241,7 @@ private struct SearchPane: View {
                 if !model.searchText.isEmpty {
                     Button { model.searchText = ""; model.searchResults = nil } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                    }.buttonStyle(.plain)
+                    }.buttonStyle(.plainHit)
                 }
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
@@ -255,7 +265,7 @@ private struct SearchPane: View {
                                                                 : AnyShapeStyle(.white.opacity(0.12)))
                                     }
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.plainHit)
                         }
                     }
                     .padding(.horizontal, 16)
@@ -404,7 +414,7 @@ private struct DetailPane: View {
                     Image(systemName: "chevron.left").font(.callout.weight(.semibold))
                         .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHit)
                 .glassEffect(.regular.interactive(), in: .circle)
 
                 Artwork(url: model.detail?.artworkURL, corner: 8)
@@ -425,7 +435,7 @@ private struct DetailPane: View {
                         Label("Play", systemImage: "play.fill")
                             .padding(.horizontal, 14).padding(.vertical, 8)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHit)
                     .glassEffect(.regular.interactive(), in: .capsule)
                 }
             }
@@ -506,7 +516,7 @@ struct ShelfCard: View {
             }
             .frame(width: 132, alignment: .leading)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
         .scaleEffect(hovering ? 1.035 : 1)
         .animation(.spring(response: 0.3, dampingFraction: 0.75), value: hovering)
         .onHover { hovering = $0 }
@@ -546,7 +556,7 @@ struct TopResultCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHit)
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))
         .onHover { hovering = $0 }
     }
@@ -600,7 +610,7 @@ struct TrackRow: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHit)
 
             // Inline actions on the Mac only.
             //
