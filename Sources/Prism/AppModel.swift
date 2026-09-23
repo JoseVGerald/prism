@@ -287,7 +287,9 @@ final class AppModel {
     private func listenForTempo(_ snap: EngineSnapshot) {
         let t = snap.currentTime, d = snap.duration
         let want = transitions.autoMix && transitions.seconds > 0 && snap.playback.isPlaying
-            && d > 60 && (t < 45 || d - t < 50)
+            // The end window opens well before the blend does, so the
+            // outgoing beat is locked by the time a 30-second fade starts.
+            && d > 60 && (t < 45 || d - t < max(50, transitions.seconds + 25))
         liveAudio.set("automix", want)
         engine.needPreciseClock("tempo memory", liveAudio.running)
 

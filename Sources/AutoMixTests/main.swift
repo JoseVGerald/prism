@@ -369,6 +369,17 @@ check(close(TempoRampPlanner.foldToOctave(of: 90, bpm: 140), 70),
 check(close(TempoRampPlanner.foldToOctave(of: 170, bpm: 85), 170),
       "85 counted against 170 folds up, not down")
 
+// Long blends: a matching pair grows to the setting in whole bars.
+let longA = TrackAnalysis(id: "a", duration: 240, bpm: 120, energy: 0.5, confidence: 0.9)
+let longB = TrackAnalysis(id: "b", duration: 240, bpm: 120, energy: 0.5, confidence: 0.9)
+let thirty = AutoMix.plan(from: longA, to: longB, preferred: 30, maxDuration: 30)
+check(close(thirty.duration, 30, 0.01) && thirty.beats.map { $0 % 4 == 0 } == true,
+      "a 30s setting gives a 30s blend on a bar line for a matching pair (got \(thirty.duration)s, \(thirty.beats ?? 0) beats)")
+let short = AutoMix.plan(from: longA, to: longB, preferred: 6, maxDuration: 30)
+check(short.duration < 10, "a short setting is not grown (got \(short.duration)s)")
+let capped = AutoMix.plan(from: longA, to: longB, preferred: 30, maxDuration: 20)
+check(capped.duration <= 20, "never longer than what is left of the song")
+
 // MARK: - Lyric timing
 
 suite("Lyric timing")

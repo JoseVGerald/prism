@@ -155,7 +155,7 @@ struct CrossfadeControl: View {
                                               let r = v.rounded()
                                               model.transitions.seconds = r <= 0 ? 0 : max(r, Transitions.minimumBlend)
                                           }),
-                           in: 0...16, step: 1)
+                           in: 0...Transitions.maximumBlend, step: 1)
                     Text("Overlaps tracks using a second hidden player. Costs a\nlittle extra CPU and network while a fade is armed.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }

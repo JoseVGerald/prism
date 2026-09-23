@@ -118,6 +118,9 @@ final class Transitions {
 
     /// 0 turns crossfade off entirely; the shadow player is then never loaded.
     /// Any other value is held at or above the minimum.
+    /// Longest blend the slider offers, and the most AutoMix will plan.
+    static let maximumBlend: Double = 30
+
     var seconds: Double = 0 {
         didSet {
             if seconds > 0, seconds < Self.minimumBlend {
@@ -143,7 +146,10 @@ final class Transitions {
     /// the song, and arming overlaps firing. A six-second floor on the blend
     /// needs more headroom than the old three-second one did: the track has to
     /// hold the blend, the arming window before it, and still be a song.
-    private let minimumTrackLength: Double = 45
+    ///
+    /// Grows with the setting: a 30-second blend plus its arming window would
+    /// otherwise swallow a 45-second track whole.
+    private var minimumTrackLength: Double { max(45, seconds + 30) }
 
     /// When on, the crossfade slider becomes a *preference* and AutoMix picks
     /// the real length from the two tempos. Off, the slider is exact.
@@ -564,7 +570,7 @@ final class Transitions {
         }
         return AutoMix.plan(from: a, to: b, preferred: seconds,
                             capabilities: capabilities,
-                            maxDuration: min(16, max(remaining, 1)),
+                            maxDuration: min(Self.maximumBlend, max(remaining, 1)),
                             // 0 hands the whole tempo difference to the
                             // incoming track, which absorbs it silently.
                             bendShare: bendOutgoing ? 0.5 : 0)

@@ -181,9 +181,23 @@ public enum AutoMix {
         // a musical boundary, so reaching the six-second floor by doubling
         // 8 beats to 16 keeps it musical where simply padding the time would
         // leave the blend ending mid-phrase.
-        let beats = Tempo.phraseBeats(match: match, harmonic: harmonic,
+        var beats = Tempo.phraseBeats(match: match, harmonic: harmonic,
                                       energyDelta: energyDelta,
                                       atLeast: floor, bpm: bpmA)
+
+        // A pair that agrees is grown towards the length the listener asked
+        // for, in whole bars and never past it — so a 30-second setting gives
+        // a long blend that still ends on a bar line. A pair that does not
+        // agree (the 4-beat answer) stays brief whatever the setting.
+        if beats >= 8, preferred > Tempo.duration(beats: beats, bpm: bpmA) {
+            let bars = Int((preferred * bpmA / 60 / 4).rounded(.down))
+            let grown = min(max(beats, bars * 4), 128)
+            if grown > beats {
+                notes.append(String(format: "grown from %d to %d beats towards the %.0fs setting",
+                                    beats, grown, preferred))
+                beats = grown
+            }
+        }
 
         // The phrase is counted at the outgoing track's tempo, since that is
         // the pulse the listener is already following.
