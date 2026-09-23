@@ -194,6 +194,15 @@ final class Transitions {
     /// Head start the plan gave the incoming track, so a blind alignment knows
     /// the shadow did not begin at zero.
     private var incomingOffset: Double = 0
+
+    /// What Prism has heard of a track: seconds per beat, and where a beat
+    /// falls in the track's own time. Set by the model from `TempoMemory`.
+    var heardBeat: ((String) -> TempoMemory.Heard?)?
+    /// The beat grid being heard right now — seconds per beat and when one
+    /// landed. Taken at the top of a blend, while it is still the outgoing
+    /// song's alone.
+    var liveBeat: (() -> (period: Double, beatAt: Date)?)?
+    private var alignTask: Task<Void, Never>?
     /// True only during the swap, when the player legitimately stops for a
     /// moment. Outside it, a *paused* player means the user pressed pause.
     ///
@@ -546,9 +555,12 @@ final class Transitions {
         guard autoMix else {
             return .fallback(seconds: seconds, reason: "AutoMix off; using the set length")
         }
-        guard let a = analysis.cached(outgoing),
-              let nextId = armedFor, let b = analysis.cached(nextId) else {
-            return .fallback(seconds: seconds, reason: "no analysis yet; using the set length")
+        let a = analysisForPlan(outgoing, duration: engine.snapshot.duration, live: true)
+        let b = armedFor.flatMap { analysisForPlan($0, duration: 0, live: false) }
+        guard let a, let b else {
+            let missing = [a == nil ? "the outgoing track" : nil, b == nil ? "the incoming track" : nil]
+                .compactMap { $0 }.joined(separator: " or ")
+            return .fallback(seconds: seconds, reason: "no tempo known for \(missing); using the set length")
         }
         return AutoMix.plan(from: a, to: b, preferred: seconds,
                             capabilities: capabilities,
@@ -572,6 +584,7 @@ final class Transitions {
         // length it claims to be however slow the bridge is.
         let began = Date()
         fadeClock = (began, fade, fadingFrom)
+        startBeatAlignment(began: began, rate: ramp?.incomingRate ?? 1)
         var lastTraced = -1.0
         while true {
             if Task.isCancelled { return }
@@ -957,6 +970,8 @@ final class Transitions {
         handingOver = false
         fading = false
         fadeClock = nil
+        alignTask?.cancel()
+        alignTask = nil
         armedFor = nil
         fadingFrom = nil
         restoreVolume = nil
@@ -1008,6 +1023,104 @@ final class Transitions {
         shadow = nil
     }
 
+    // MARK: Tempo and beats
+
+    /// The planner's view of a track: the online lookup, with the tempo Prism
+    /// has heard filled in where the lookup has none. The lookup answers
+    /// `bpm: 0` for most tracks, which is why most blends were plain fades.
+    /// `live`: the track is the one playing, so the beat being heard right
+    /// now is its tempo even if it has not been kept yet.
+    private func analysisForPlan(_ id: String, duration: Double, live: Bool) -> TrackAnalysis? {
+        let looked = analysis.cached(id)
+        let period = heardBeat?(id)?.period ?? (live ? liveBeat?()?.period : nil)
+        guard let period, period > 0.2 else {
+            return looked?.bpm == nil ? nil : looked
+        }
+        var a = looked ?? TrackAnalysis(id: id, duration: duration)
+        if a.bpm == nil || a.confidence < 0.8 {
+            a.bpm = 60 / period
+            a.confidence = max(a.confidence, 0.8)
+        }
+        return a
+    }
+
+    /// Lines the incoming track's beats up with the outgoing track's, early in
+    /// the blend while the new song is still quiet under the old one.
+    ///
+    /// Tempo matching alone makes the two pulses the same speed but leaves
+    /// them wherever they happened to start, which is the "two songs at once"
+    /// sound. This reads where the incoming track actually is, compares its
+    /// beats (from `TempoMemory`) against the outgoing track's live beat grid,
+    /// and nudges it with a seek — twice, because a seek holds the track
+    /// silent for a moment and so lands it that much late; the second pass
+    /// measures what the first one cost and jumps that much further. Both land
+    /// inside the first two and a half seconds, under the outgoing track.
+    private func startBeatAlignment(began: Date, rate: Double) {
+        alignTask?.cancel()
+        guard let grid = liveBeat?() else {
+            trace("[BEATS] not aligned — no steady beat heard in the outgoing track")
+            return
+        }
+        guard let id = armedFor else { return }
+        alignTask = Task { [weak self] in
+            await self?.alignBeats(began: began, rate: rate, grid: grid, armed: id)
+        }
+    }
+
+    private func alignBeats(began: Date, rate: Double,
+                            grid: (period: Double, beatAt: Date), armed: String) async {
+        // Which recording the shadow is really playing, and how long it is —
+        // YouTube can load another version than the queue row names.
+        let wait0 = began.addingTimeInterval(0.6).timeIntervalSinceNow
+        if wait0 > 0 { try? await Task.sleep(for: .seconds(wait0)) }
+        guard !Task.isCancelled, fading, let info = await shadowInfo() else { return }
+        guard let heard = heardBeat?(info.videoId) ?? heardBeat?(armed) else {
+            trace("[BEATS] not aligned — the incoming track (\(info.videoId)) has not been heard yet")
+            return
+        }
+        guard let phase = heard.phase,
+              heard.direct == true && info.videoId == armed || heard.duration.map({ abs($0 - info.duration) < 1 }) == true
+        else {
+            trace(String(format: "[BEATS] not aligned — heard another version (%.0fs, this one %.0fs); tempo matched, beats not placed",
+                         heard.duration ?? 0, info.duration))
+            return
+        }
+        // The matched incoming beat must be the outgoing one, or half or
+        // double it; anything else would line up one beat and miss the rest.
+        let ratio = (heard.period / rate) / grid.period
+        let octave = pow(2, log2(ratio).rounded())
+        guard abs(ratio / octave - 1) < 0.025 else {
+            trace(String(format: "[BEATS] not aligned — tempos don't match (ratio %.3f)", ratio))
+            return
+        }
+        let period = heard.period
+
+        func miss() async -> (error: Double, media: Double, at: Date)? {
+            guard let r = await shadowReading() else { return nil }
+            let e = BeatAlign.error(incomingMedia: r.media, readAt: r.at.timeIntervalSinceReferenceDate,
+                                    incomingPhase: phase, incomingPeriod: period, rate: rate,
+                                    outgoingBeat: grid.beatAt.timeIntervalSinceReferenceDate,
+                                    outgoingPeriod: grid.period)
+            return (e, r.media, r.at)
+        }
+        for (pass, due) in [0.9, 2.1, 3.3].enumerated() {
+            let wait = began.addingTimeInterval(due).timeIntervalSinceNow
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+            guard !Task.isCancelled, fading, let m = await miss() else { return }
+            trace(String(format: "[BEATS] pass %d: incoming beats %+.0f ms off the outgoing grid",
+                         pass, m.error * 1000))
+            // The third reading only reports how it ended.
+            guard pass < 2, abs(m.error) > 0.03 else { return }
+            // After a seek, a late residual is mostly that seek's stall; expect
+            // the next to cost as much.
+            let shift = BeatAlign.shift(error: m.error, rate: rate,
+                                        stall: pass == 0 ? 0 : min(max(m.error, 0), 0.4))
+            let target = max(m.media + Date().timeIntervalSince(m.at) * rate + shift, 0)
+            fire("(function(){var p=document.querySelector('#movie_player'); if(p) p.seekTo(\(target), true);})()")
+            incomingOffset += shift
+        }
+    }
+
     // MARK: Shadow JS
 
     /// Dispatch without waiting. Used wherever the reply is not needed, so the
@@ -1024,6 +1137,23 @@ final class Transitions {
                 cont.resume(returning: value as? String)
             }
         }
+    }
+
+    /// The shadow's position and the wall-clock moment it was read, from the
+    /// same instant in the page, so the reply's trip back does not count.
+    private func shadowReading() async -> (media: Double, at: Date)? {
+        let raw = await js("(function(){var v=document.querySelector('#movie_player video');return v&&!v.paused?(v.currentTime+'|'+(performance.timeOrigin+performance.now())):'';})()")
+        let parts = (raw ?? "").split(separator: "|").compactMap { Double($0) }
+        guard parts.count == 2 else { return nil }
+        return (parts[0], Date(timeIntervalSince1970: parts[1] / 1000))
+    }
+
+    /// The video the shadow is actually playing, and its length.
+    private func shadowInfo() async -> (videoId: String, duration: Double)? {
+        let raw = await js("(function(){var p=document.querySelector('#movie_player');if(!p||!p.getVideoData)return '';var d=p.getVideoData();return (d&&d.video_id?d.video_id:'')+'|'+(p.getDuration?p.getDuration():0);})()")
+        let parts = (raw ?? "").split(separator: "|")
+        guard parts.count == 2, !parts[0].isEmpty, let d = Double(parts[1]) else { return nil }
+        return (String(parts[0]), d)
     }
 
     private func shadowClock() async -> Double {

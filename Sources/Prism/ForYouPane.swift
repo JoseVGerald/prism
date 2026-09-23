@@ -1,40 +1,72 @@
 import SwiftUI
 
-/// The landing page: what you have been listening to, and what to play next.
+/// The landing page.
 ///
-/// Everything here comes from Prism's own log — YouTube's `FEmusic_history`
-/// feed returns nothing through the web API on this account, so the page is
-/// honest about being empty on day one rather than inventing filler.
+/// Two sources, side by side. YouTube Music's own Home feed — Quick picks,
+/// your mixes, Listen again, new releases — personalised to the signed-in
+/// account, fetched the way the web app fetches it. And Prism's own listening
+/// log, for the things only it knows: what you have had on repeat, what you
+/// used to play and haven't lately, and the stats. The feed is what makes the
+/// page worth opening; the log is what makes it yours when the feed is thin.
 struct ForYouPane: View {
     @Bindable var model: AppModel
 
     private var history: History { model.history }
+    private var monthAgo: Date { Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? .distantPast }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 26) {
+            VStack(alignment: .leading, spacing: 30) {
                 header
-
-                if history.isEmpty {
+                if history.isEmpty && model.home.isEmpty && !model.homeLoading {
                     emptyState
                 } else {
-                    recentlyPlayed
+                    heroRow
+                    // YouTube's shelves in YouTube's order — songs as a grid,
+                    // everything else as cards — with On repeat after the
+                    // first two, where it is seen without scrolling far.
+                    ForEach(Array(model.home.prefix(2))) { shelf($0) }
+                    onRepeat
+                    ForEach(Array(model.home.dropFirst(2))) { shelf($0) }
+                    if model.homeLoading && model.home.isEmpty { loadingShelf }
+                    rediscover
                     if !model.suggestions.isEmpty || model.suggestionsLoading { suggestions }
-                    quickStats
+                    if !history.isEmpty { quickStats }
                 }
             }
             .padding(22)
         }
-        .task { model.loadSuggestions() }
+        .task(id: model.engine.snapshot.ready) {
+            model.loadHome()
+            model.loadSuggestions()
+        }
     }
 
+    // MARK: Header and hero
+
     private var header: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(greeting).font(.system(size: 26, weight: .semibold, design: .rounded))
-            Text(history.isEmpty
-                 ? "Play something and this page fills itself in."
-                 : "Picked up from what you have actually been playing.")
-                .font(.callout).foregroundStyle(.secondary)
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(greeting).font(.system(size: 28, weight: .bold, design: .rounded))
+                Text(model.home.isEmpty
+                     ? (history.isEmpty ? "Play something and this page fills itself in."
+                                        : "Picked up from what you have actually been playing.")
+                     : "Your YouTube Music picks, and what Prism has heard you play.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button {
+                model.loadHome(force: true)
+                model.loadSuggestions(force: true)
+            } label: {
+                Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold))
+                    .frame(width: 30, height: 30)
+                    .rotationEffect(.degrees(model.homeLoading ? 180 : 0))
+                    .animation(.easeInOut(duration: 0.5), value: model.homeLoading)
+            }
+            .buttonStyle(.plainHit)
+            .glassEffect(.regular.interactive(), in: .circle)
+            .help("Refresh")
         }
     }
 
@@ -47,41 +79,161 @@ struct ForYouPane: View {
         }
     }
 
+    /// "Jump back in" to the last thing played, beside the account's own mixes.
+    @ViewBuilder
+    private var heroRow: some View {
+        let last = history.recent(limit: 1).first
+        let mixes = model.home.flatMap(\.items)
+            .filter { $0.kind == .mix || ($0.kind == .playlist && $0.title.localizedCaseInsensitiveContains("mix")) }
+        if last != nil || !mixes.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 14) {
+                    if let last {
+                        HeroTile(title: last.title, subtitle: "Jump back in · \(last.artist)",
+                                 artworkURL: last.artworkURL, symbol: "play.fill") {
+                            model.engine.play(videoId: last.videoId)
+                        }
+                    }
+                    ForEach(mixes.prefix(4)) { mix in
+                        HeroTile(title: mix.title, subtitle: mix.subtitle ?? "Mix",
+                                 artworkURL: mix.artworkURL, symbol: "shuffle") { model.play(mix) }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+    }
+
     private var emptyState: some View {
         VStack(spacing: 12) {
             LogoMark(size: 44).opacity(0.7)
-            Text("Nothing logged yet").font(.title3.weight(.medium))
-            Text("Prism keeps its own listening log on \(PlatformWording.thisDevice). It starts the first time you press play, and nothing leaves the device.")
+            Text("Nothing here yet").font(.title3.weight(.medium))
+            Text(model.engine.snapshot.signedIn
+                 ? "Your YouTube Music picks will load in a moment, and Prism's own listening log fills in as you play."
+                 : "Sign in for your YouTube Music picks. Prism also keeps its own listening log on \(PlatformWording.thisDevice) — nothing leaves the device.")
                 .font(.callout).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Find something to play") { model.route = .search }
-                .buttonStyle(.plainHit)
-                .font(.callout.weight(.medium))
-                .padding(.horizontal, 16).padding(.vertical, 9)
-                .glassEffect(.regular.interactive(), in: .capsule)
-                .padding(.top, 4)
+                .frame(maxWidth: 440)
+            HStack(spacing: 10) {
+                if !model.engine.snapshot.signedIn {
+                    Button("Sign in") { model.engine.beginSignIn() }
+                        .buttonStyle(.plainHit)
+                        .font(.callout.weight(.medium))
+                        .padding(.horizontal, 16).padding(.vertical, 9)
+                        .glassEffect(.regular.interactive(), in: .capsule)
+                }
+                Button("Find something to play") { model.route = .search }
+                    .buttonStyle(.plainHit)
+                    .font(.callout.weight(.medium))
+                    .padding(.horizontal, 16).padding(.vertical, 9)
+                    .glassEffect(.regular.interactive(), in: .capsule)
+            }
+            .padding(.top, 4)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 46)
     }
 
-    // MARK: Sections
+    // MARK: YouTube Music shelves
 
-    private var recentlyPlayed: some View {
-        section("Recently played", subtitle: "\(history.recent(limit: 200).count) tracks in your log") {
+    @ViewBuilder
+    private func shelf(_ shelf: HomeShelf) -> some View {
+        if shelf.isSongs { quickPicks(shelf) } else { cards(shelf) }
+    }
+
+    private func quickPicks(_ shelf: HomeShelf) -> some View {
+        section(shelf.title, subtitle: shelf.strapline ?? "Songs picked for you by YouTube Music") {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 14) {
-                    ForEach(history.recent(limit: 18)) { play in
-                        PlayCard(play: play) { model.engine.play(videoId: play.videoId) }
-                            .contextMenu {
-                                Button("Play") { model.engine.play(videoId: play.videoId) }
-                                Button("Play next") { model.enqueue(play.asTrack, atEnd: false) }
-                                Button("Add to queue") { model.enqueue(play.asTrack, atEnd: true) }
-                            }
+                LazyHGrid(rows: Array(repeating: GridItem(.fixed(58), spacing: 2), count: 4), spacing: 10) {
+                    ForEach(shelf.items) { item in
+                        QuickPickRow(item: item,
+                                     isCurrent: item.videoId == model.engine.snapshot.track?.videoId) {
+                            model.play(item)
+                        }
+                        .contextMenu { songMenu(item) }
                     }
                 }
-                .padding(.horizontal, 2).padding(.vertical, 4)
+                .padding(.vertical, 2)
             }
+        }
+    }
+
+    private func cards(_ shelf: HomeShelf) -> some View {
+        section(shelf.title, subtitle: shelf.strapline) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 16) {
+                    ForEach(shelf.items) { item in
+                        HomeCard(item: item) { model.play(item) }
+                            .contextMenu { if item.videoId != nil { songMenu(item) } }
+                    }
+                }
+                .padding(.vertical, 6).padding(.horizontal, 2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func songMenu(_ item: HomeItem) -> some View {
+        if let id = item.videoId {
+            let track = Track(videoId: id, title: item.title, artist: item.subtitle ?? "",
+                              album: nil, durationText: nil, durationSeconds: nil,
+                              artworkURL: item.artworkURL)
+            Button("Play") { model.engine.play(videoId: id) }
+            Button("Play next") { model.enqueue(track, atEnd: false) }
+            Button("Add to queue") { model.enqueue(track, atEnd: true) }
+            Button("Download") { model.download(track) }
+        }
+    }
+
+    private var loadingShelf: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Loading your YouTube Music picks…").font(.callout).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 12)
+    }
+
+    // MARK: From Prism's own log
+
+    /// What has been played most this month.
+    @ViewBuilder
+    private var onRepeat: some View {
+        let top = history.topTracks(since: monthAgo, limit: 14).filter { $0.count >= 2 }
+        if top.count >= 3 {
+            section("On repeat", subtitle: "Your most played this month") {
+                playCards(top.map(\.play), badges: top.map { "\($0.count) plays" })
+            }
+        }
+    }
+
+    /// Played a lot before this month, not at all since.
+    @ViewBuilder
+    private var rediscover: some View {
+        let recentIds = Set(history.plays(since: monthAgo).map(\.videoId))
+        let yearAgo = Calendar.current.date(byAdding: .year, value: -1, to: Date()) ?? .distantPast
+        let older = history.topTracks(since: yearAgo, limit: 60)
+            .filter { !recentIds.contains($0.play.videoId) && $0.count >= 2 }
+            .prefix(14)
+        if older.count >= 3 {
+            section("Rediscover", subtitle: "You played these a lot — just not lately") {
+                playCards(older.map(\.play), badges: nil)
+            }
+        }
+    }
+
+    private func playCards(_ plays: [Play], badges: [String]?) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: 14) {
+                ForEach(Array(plays.enumerated()), id: \.element.id) { i, play in
+                    PlayCard(play: play, badge: badges?[i]) { model.engine.play(videoId: play.videoId) }
+                        .contextMenu {
+                            Button("Play") { model.engine.play(videoId: play.videoId) }
+                            Button("Play next") { model.enqueue(play.asTrack, atEnd: false) }
+                            Button("Add to queue") { model.enqueue(play.asTrack, atEnd: true) }
+                        }
+                }
+            }
+            .padding(.horizontal, 2).padding(.vertical, 4)
         }
     }
 
@@ -107,10 +259,9 @@ struct ForYouPane: View {
     private var quickStats: some View {
         section("This month", subtitle: nil) {
             HStack(spacing: 12) {
-                let since = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? .distantPast
-                StatTile(value: hours(history.seconds(since: since)), label: "listened")
-                StatTile(value: "\(history.plays(since: since).count)", label: "plays")
-                StatTile(value: "\(history.streak)", label: history.streak == 1 ? "day streak" : "day streak")
+                StatTile(value: hours(history.seconds(since: monthAgo)), label: "listened")
+                StatTile(value: "\(history.plays(since: monthAgo).count)", label: "plays")
+                StatTile(value: "\(history.streak)", label: "day streak")
                 Button {
                     model.route = .dashboard
                 } label: {
@@ -147,8 +298,44 @@ struct ForYouPane: View {
     }
 }
 
+/// A wide tile for the top of the page: art on the left, words on the right.
+private struct HeroTile: View {
+    let title: String
+    let subtitle: String
+    let artworkURL: String?
+    let symbol: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Artwork(url: artworkURL, corner: 10).frame(width: 64, height: 64)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.headline).lineLimit(1)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                Spacer(minLength: 6)
+                Image(systemName: symbol)
+                    .font(.system(size: 13, weight: .bold))
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(.white.opacity(hovering ? 0.25 : 0.12)))
+            }
+            .padding(10)
+            .frame(width: 300, alignment: .leading)
+        }
+        .buttonStyle(.plainHit)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
+        .scaleEffect(hovering ? 1.02 : 1)
+        .onHover { hovering = $0 }
+        .animation(.spring(response: 0.28, dampingFraction: 0.8), value: hovering)
+    }
+}
+
 private struct PlayCard: View {
     let play: Play
+    var badge: String? = nil
     let action: () -> Void
 
     @State private var hovering = false
@@ -167,7 +354,8 @@ private struct PlayCard: View {
                 .frame(width: 128, height: 128)
 
                 Text(play.title).font(.callout.weight(.medium)).lineLimit(1)
-                Text(play.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(badge.map { "\(play.artist) · \($0)" } ?? play.artist)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             .frame(width: 128, alignment: .leading)
             .contentShape(Rectangle())

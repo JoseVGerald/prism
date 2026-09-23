@@ -26,6 +26,7 @@ final class AppModel {
     #endif
     let scrobbler = Scrobbler()
     let downloads = DownloadLog()
+    let tempoMemory = TempoMemory()
 
     /// Progress and outcome of a Takeout import, for the dashboard to show.
     var importStatus: String?
@@ -142,6 +143,7 @@ final class AppModel {
 
     init() {
         transitions = Transitions(engine: engine)
+        transitions.heardBeat = { [tempoMemory] id in tempoMemory.heard(id) }
         quality = QualitySettings(engine: engine)
         nowPlaying = NowPlaying(engine: engine)
         engine.onDocumentReady = { [quality] in quality.applyToEngine() }
@@ -151,6 +153,10 @@ final class AppModel {
         probe.startIfEnabled()
         ambientPanel = AmbientPanelController(model: self)
         startIdleWatch()
+        transitions.liveBeat = { [liveAudio] in
+            guard let p = liveAudio.bands.tempo, let at = liveAudio.bands.beatAt else { return nil }
+            return (p, at)
+        }
         #endif
         if !UserDefaults.standard.bool(forKey: Self.seenKey) {
             route = .forYou
@@ -246,7 +252,82 @@ final class AppModel {
         if lyricsMode || ambientLyricsWanted { loadLyrics(for: snap.track) }
         refreshNextPalette()
         prefetchNextLyrics()
+        // Ready before For You is opened, so the page arrives filled.
+        if home.isEmpty, snap.ready { loadHome() }
+        #if canImport(AppKit)
+        listenForTempo(snap)
+        #endif
     }
+
+    #if canImport(AppKit)
+    // MARK: Tempo memory
+
+    /// Seconds the tracker has spent locked on each tempo of the song
+    /// playing. Counted across the whole song, not as an unbroken run: on
+    /// trap the tracker flips between a tempo and its 3:2 (measured, 134.5
+    /// and 89.7 on one song), and a streak that reset at every flip never
+    /// kept anything.
+    private var tempoVotes: [(period: Double, seconds: Double)] = []
+    private var trackSeen: (id: String, at: Date)?
+    private var lastVote = Date()
+
+    /// Hears each song's tempo and beat for AutoMix, and keeps them.
+    ///
+    /// With AutoMix on, capture runs for the first 45 seconds of a song (to
+    /// learn it for when it is next the incoming track) and the last 50 (so
+    /// the outgoing song's beat is live when a blend starts). The recording
+    /// indicator shows for those windows; capture already running for the rim
+    /// or locked mode counts too.
+    ///
+    /// A tempo is kept once it has been heard for ten seconds in total, eight
+    /// seconds or more after the song started — the tracker carries the old
+    /// song's tempo for a few seconds after a change — and only while it is the
+    /// one heard most. The beat's position is taken whenever the tracker is on
+    /// that tempo.
+    private func listenForTempo(_ snap: EngineSnapshot) {
+        let t = snap.currentTime, d = snap.duration
+        let want = transitions.autoMix && transitions.seconds > 0 && snap.playback.isPlaying
+            && d > 60 && (t < 45 || d - t < 50)
+        liveAudio.set("automix", want)
+        engine.needPreciseClock("tempo memory", liveAudio.running)
+
+        let now = Date()
+        let dt = min(now.timeIntervalSince(lastVote), 2)
+        lastVote = now
+        guard let id = snap.track?.videoId else { return }
+        if trackSeen?.id != id { trackSeen = (id, now); tempoVotes = [] }
+        let b = liveAudio.bands
+        guard liveAudio.running, snap.playback.isPlaying, !transitions.fading,
+              let seen = trackSeen, now.timeIntervalSince(seen.at) > 8,
+              let period = b.tempo, let beatAt = b.beatAt
+        else { return }
+
+        if let i = tempoVotes.firstIndex(where: { abs(period / $0.period - 1) < 0.01 }) {
+            tempoVotes[i].seconds += dt
+            tempoVotes[i].period = tempoVotes[i].period * 0.9 + period * 0.1
+        } else {
+            tempoVotes.append((period, dt))
+        }
+        guard let top = tempoVotes.max(by: { $0.seconds < $1.seconds }),
+              top.seconds >= 10, abs(period / top.period - 1) < 0.01 else { return }
+        // Where that beat fell in the song's own time.
+        var phase = engine.smoothTime(at: beatAt).truncatingRemainder(dividingBy: period)
+        if phase < 0 { phase += period }
+        tempoMemory.remember(id, period: period, phase: phase, duration: snap.duration, direct: true)
+        // Also under the queue row's id: YouTube often plays another version
+        // from the one the queue lists (measured, row oCveByMXd_0 played as
+        // sMrruvN56HA, and an "Instrumental" row played as the vocal), and a
+        // mix loads the incoming track by the row. The recording's length goes
+        // with it, so a mix can tell whether the beats carry over.
+        if snap.queue.indices.contains(snap.queueIndex) {
+            let row = snap.queue[snap.queueIndex]
+            if row.videoId != id {
+                tempoMemory.remember(row.videoId, period: period, phase: phase,
+                                     duration: snap.duration, direct: false)
+            }
+        }
+    }
+    #endif
 
     // MARK: Locked-mode support
 
@@ -346,6 +427,62 @@ final class AppModel {
     }
 
     // MARK: For You
+
+    /// YouTube Music's Home shelves for this account.
+    var home: [HomeShelf] = []
+    var homeLoading = false
+    private var homeLoadedAt: Date?
+
+    private var homeTriedAt: Date?
+
+    func loadHome(force: Bool = false) {
+        guard engine.snapshot.ready, !homeLoading else { return }
+        if !force, let at = homeLoadedAt, Date().timeIntervalSince(at) < 600, !home.isEmpty { return }
+        // A failed load is retried, but not on every snapshot.
+        if !force, home.isEmpty, let tried = homeTriedAt, Date().timeIntervalSince(tried) < 60 { return }
+        homeLoading = true
+        homeTriedAt = Date()
+        Task {
+            defer { homeLoading = false }
+            do {
+                let shelves = try await engine.home()
+                withAnimation(.smooth(duration: 0.3)) { home = shelves }
+                homeLoadedAt = Date()
+                evalLog("home.log", shelves.map { "\($0.title): \($0.items.count)\($0.isSongs ? " songs" : "")" }
+                    .joined(separator: " · "))
+            } catch {
+                evalLog("home.log", "failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// One line to `~/.prism-eval/<file>` under PRISM_EVAL.
+    private func evalLog(_ file: String, _ line: String) {
+        guard ProcessInfo.processInfo.environment["PRISM_EVAL"] == "1" else { return }
+        let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".prism-eval/\(file)")
+        let text = "\(Date().formatted(.iso8601.time(includingFractionalSeconds: false))) \(line)\n"
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(Data(text.utf8)); try? h.close()
+        } else {
+            try? text.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    /// Whatever a Home card does: play a song, open a page, or start a mix.
+    func play(_ item: HomeItem) {
+        switch item.kind {
+        case .song, .video:
+            if let id = item.videoId { engine.play(videoId: id) }
+        case .album, .playlist, .artist:
+            if let shelf = item.asShelf { open(shelf) }
+            else if let pid = item.playlistId { engine.playPlaylist(pid) }
+        case .mix:
+            if let pid = item.playlistId {
+                engine.playPlaylist(pid)
+                flash("Playing \(item.title)")
+            } else if let shelf = item.asShelf { open(shelf) }
+        }
+    }
 
     var suggestions: [Track] = []
     var suggestionsLoading = false

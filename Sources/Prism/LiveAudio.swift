@@ -56,7 +56,39 @@ final class LiveAudio: NSObject, AudioBandsSource {
     func set(_ who: String, _ wanted: Bool) {
         if wanted { holders.insert(who) } else { holders.remove(who) }
         if holders.isEmpty { gaveUp = false }
+        // A stream delivers buffers continuously, silence included, so one
+        // that has gone quiet for seconds has stopped without saying so.
+        if running, transition == nil, Date().timeIntervalSince(lastHeard) > 4 {
+            streamDied("no audio for 4s")
+        }
         reconcile()
+    }
+
+    /// When the capture last delivered audio.
+    @ObservationIgnored private var lastHeard = Date()
+
+    /// The stream is gone — macOS stopped it (display change, sleep, lock), or
+    /// it went silent. It used to be left for dead with `running` still true,
+    /// so nothing ever restarted it: measured, the tempo log simply stopped
+    /// and the next song was never heard. Forget it and let reconcile start a
+    /// fresh one if anyone still wants it.
+    private func streamDied(_ why: String) {
+        guard stream != nil || running else { return }
+        log("capture stopped by the system (\(why)); restarting if still wanted")
+        stream = nil
+        output = nil
+        running = false
+        bands = .silent
+        reconcile()
+    }
+
+    private func log(_ line: String) {
+        guard ProcessInfo.processInfo.environment["PRISM_EVAL"] == "1" else { return }
+        let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".prism-eval/tempo.log")
+        let text = "\(Date().formatted(.iso8601.time(includingFractionalSeconds: true))) [capture] \(line)\n"
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(Data(text.utf8)); try? h.close()
+        }
     }
 
     /// Brings capture in line with whether anyone wants it.
@@ -97,7 +129,12 @@ final class LiveAudio: NSObject, AudioBandsSource {
             config.showsCursor = false
 
             let out = CaptureOutput { [weak self] b in
-                Task { @MainActor in self?.bands = b }
+                Task { @MainActor in
+                    self?.bands = b
+                    self?.lastHeard = Date()
+                }
+            } stopped: { [weak self] error in
+                Task { @MainActor in self?.streamDied(error.localizedDescription) }
             }
             let s = SCStream(filter: SCContentFilter(display: display, excludingWindows: []),
                              configuration: config, delegate: out)
@@ -107,7 +144,9 @@ final class LiveAudio: NSObject, AudioBandsSource {
             stream = s
             output = out
             running = true
+            lastHeard = Date()
             failure = nil
+            log("capture started for \(holders.sorted().joined(separator: ", "))")
         } catch {
             // Most often: permission not granted. The light falls back to its
             // breathing rather than going dark.
@@ -117,6 +156,7 @@ final class LiveAudio: NSObject, AudioBandsSource {
             } else {
                 failure = "Live audio could not start: \(error.localizedDescription)"
             }
+            log("capture failed to start: \(error.localizedDescription)")
             running = false
         }
     }
@@ -127,6 +167,7 @@ final class LiveAudio: NSObject, AudioBandsSource {
         guard let s = stream else { return }
         stream = nil
         output = nil
+        log("capture stopped — nothing wants it")
         try? await s.stopCapture()
     }
 }
@@ -164,13 +205,20 @@ private final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @
         ? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".prism-eval/tempo.log")
         : nil
 
-    init(publish: @escaping (AudioBands) -> Void) {
+    private let stopped: (Error) -> Void
+
+    init(publish: @escaping (AudioBands) -> Void, stopped: @escaping (Error) -> Void) {
         self.publish = publish
+        self.stopped = stopped
         fft = vDSP.FFT(log2n: log2n, radix: .radix2, ofType: DSPSplitComplex.self)!
         window = vDSP.window(ofType: Float.self, usingSequence: .hanningDenormalized,
                              count: n, isHalfWindow: false)
         super.init()
         frame.reserveCapacity(n * 2)
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        stopped(error)
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer,

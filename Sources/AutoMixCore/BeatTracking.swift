@@ -202,3 +202,44 @@ public struct BeatFollower: Sendable {
         anchor = predicted + gain * (t - predicted)
     }
 }
+
+/// Lining two tracks' beats up during a blend.
+///
+/// Tempo matching makes the pulses the same speed; this makes them land at
+/// the same moments. Given where the incoming track is and where its beats
+/// fall in its own timeline, and when the outgoing track's beats fall on the
+/// wall clock, it says how far to move the incoming track so its next beat
+/// lands on one of the outgoing's.
+public enum BeatAlign {
+
+    /// How far the incoming track's next beat misses the nearest outgoing
+    /// beat, in wall seconds. Positive: the incoming beat is late.
+    ///
+    /// - Parameters:
+    ///   - incomingMedia: the incoming track's position when it was read.
+    ///   - readAt: when it was read, in wall seconds.
+    ///   - incomingPhase, incomingPeriod: its beats fall at
+    ///     `incomingPhase + k·incomingPeriod` in its own timeline.
+    ///   - rate: the incoming track's playback rate.
+    ///   - outgoingBeat, outgoingPeriod: an outgoing beat and the gap between
+    ///     beats, in wall seconds.
+    public static func error(incomingMedia: Double, readAt: Double,
+                             incomingPhase: Double, incomingPeriod: Double, rate: Double,
+                             outgoingBeat: Double, outgoingPeriod: Double) -> Double {
+        guard incomingPeriod > 0, outgoingPeriod > 0, rate > 0 else { return 0 }
+        let beats = ((incomingMedia - incomingPhase) / incomingPeriod).rounded(.up)
+        let nextMedia = incomingPhase + beats * incomingPeriod
+        let nextWall = readAt + (nextMedia - incomingMedia) / rate
+        let nearest = outgoingBeat
+            + ((nextWall - outgoingBeat) / outgoingPeriod).rounded() * outgoingPeriod
+        return nextWall - nearest
+    }
+
+    /// The seek, in the incoming track's own seconds, that cancels `error` —
+    /// forward when its beats are late. `stall` is how long a seek is expected
+    /// to hold the track silent; the track falls that far behind, so it is
+    /// asked to jump that much further.
+    public static func shift(error: Double, rate: Double, stall: Double = 0) -> Double {
+        (error + max(stall, 0)) * rate
+    }
+}

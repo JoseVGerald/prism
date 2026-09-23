@@ -168,7 +168,7 @@ struct CrossfadeControl: View {
                         .toggleStyle(.switch)
                         .controlSize(.mini)
                         .font(.callout)
-                    Text("Sets the length from both tracks' tempos and bends them\ntowards one shared tempo, so the beats line up through the\noverlap. Falls back to a plain fade when a tempo is unknown.")
+                    Text("Matches both tracks' tempos and lines their beats up\nthrough the overlap. Prism learns each song's tempo by\nlistening to its first and last minute — the recording\nindicator shows then. \(model.tempoMemory.count) songs learned so far; a song\nnot heard yet falls back to a plain fade.")
                         .font(.caption2).foregroundStyle(.secondary)
 
                     if model.transitions.autoMix {

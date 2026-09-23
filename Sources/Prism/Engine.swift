@@ -28,6 +28,15 @@ final class Engine: NSObject {
     /// it rather than blaming YouTube. See `queueChange` in the bridge.
     func noteQueueCause(_ label: String) { run("noteQueueCause", [label]) }
 
+    /// Keep the queue as you left it when YouTube rebuilds a radio on its own
+    /// (see "stable queue" in the bridge). On unless turned off.
+    var stableQueue: Bool = UserDefaults.standard.object(forKey: "prism.queue.stable") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(stableQueue, forKey: "prism.queue.stable")
+            run("setStableQueue", [stableQueue])
+        }
+    }
+
     /// While the user drags the scrubber we stop letting engine ticks fight them.
     var scrubOverride: Double?
 
@@ -467,6 +476,11 @@ final class Engine: NSObject {
         return try await query("search", [text, scope.params ?? ""], as: Wrapper.self).results
     }
 
+    func home() async throws -> [HomeShelf] {
+        struct Wrapper: Decodable { let shelves: [HomeShelf] }
+        return try await query("home", [], as: Wrapper.self).shelves
+    }
+
     func loadLibrary() async throws -> [LibrarySection] {
         struct Wrapper: Decodable { let sections: [LibrarySection] }
         return try await query("library", [], as: Wrapper.self).sections
@@ -509,7 +523,7 @@ extension Engine: WKScriptMessageHandler {
             }
         case "queueChange":
             logQueueChange(data)
-        case "search", "library", "playlist", "enqueue", "download", "lyrics",
+        case "search", "library", "playlist", "enqueue", "download", "lyrics", "home",
              "audioQuality", "streamQuality":
             if let id = envelope.requestId {
                 pending.removeValue(forKey: id)?(.success(data))
@@ -542,6 +556,7 @@ extension Engine: WKNavigationDelegate {
         // Neither does the bridge's video-quality preference — a fresh document
         // starts on 'auto'. Whoever owns the setting re-states it here.
         if queueLogURL != nil { run("setQueueTrace", [true]) }
+        run("setStableQueue", [stableQueue])
         onDocumentReady?()
     }
 }

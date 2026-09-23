@@ -385,8 +385,9 @@ enum Bridge {
             + (removed.length ? ', -' + removed.length : '');
     }
 
+    const note = Date.now() - stableNoteAt < 1500 ? stableNote : null;
     post({ kind: 'queueChange', trace: {
-      cause: currentBlame() || 'NOBODY — YouTube changed it',
+      cause: currentBlame() || note || 'NOBODY — YouTube changed it',
       shape,
       index: beforeIdx + ' -> ' + idx,
       playing: (s.track && s.track.title) || null,
@@ -397,6 +398,8 @@ enum Bridge {
   };
 
   const pushState = (force) => {
+    // Runs on every queue-store change (see hookStore) and every tick.
+    onQueueStore();
     const s = snapshot();
     traceQueue(s);
     applyVideoQuality(s.track && s.track.videoId);
@@ -586,6 +589,82 @@ enum Bridge {
                        index: q.getCurrentItemIndex() });
       if (undoStack.length > 20) undoStack.shift();
     } catch (e) {}
+  };
+
+  // --------------------------------------------------------- stable queue
+  //
+  // A radio's queue is not yours in the web player: YouTube empties it and
+  // refills it with a different fifty songs every track or so — measured, the
+  // queue trace logged "0 -> 50 tracks, cause: NOBODY" twenty-eight times, the
+  // first song the same each time and the other forty-nine new. So Prism keeps
+  // the queue it last agreed to, and when YouTube swaps it out on its own, puts
+  // it back.
+  //
+  // What counts as agreeing: any edit made from Prism (add, remove, reorder,
+  // shuffle, play something new, undo) — and, for a few seconds after one, what
+  // YouTube fills in, since a new radio arrives in two steps. Moving through the
+  // queue (skip, previous, jumping to a row, a crossfade handing over) is not an
+  // edit, so a skip no longer reshuffles what comes next. When the kept queue
+  // is nearly used up, YouTube's new songs are appended after it, so a radio
+  // still never runs dry. Rate-limited: if YouTube insists four times in twenty
+  // seconds, its list stands.
+  let stableOn = false;
+  let kept = null;              // { items, ids }
+  let adoptUntil = 0;
+  let restoring = false;
+  let restores = [];
+  let stableNote = null, stableNoteAt = 0;
+
+  const NAVIGATION = /^(next|previous|jump to queue row|crossfade handover)/;
+  const editBlame = () => {
+    const b = currentBlame();
+    return b && !NAVIGATION.test(b) ? b : null;
+  };
+  const idsOf = (items) => items.map(it => unwrapQueueItem(it)?.videoId || null);
+
+  const onQueueStore = () => {
+    if (!stableOn || restoring) return;
+    const q = QUEUE(); if (!q) return;
+    let items;
+    try { items = q.getItems() || []; } catch (e) { return; }
+    const ids = idsOf(items);
+    const now = Date.now();
+
+    if (editBlame()) adoptUntil = now + 6000;
+    if (!kept || now < adoptUntil) {
+      if (items.length) kept = { items: items.slice(), ids };
+      return;
+    }
+    if (!items.length) return;              // emptied mid-rebuild: act on the refill
+    if (ids.length === kept.ids.length && ids.every((v, i) => v === kept.ids[i])) return;
+
+    const playing = PLAYER()?.getVideoData?.()?.video_id;
+    const at = kept.ids.indexOf(playing);
+    // Playing something the kept queue never had: not ours to override.
+    if (at < 0) { kept = { items: items.slice(), ids }; return; }
+
+    restores = restores.filter(t => now - t < 20000);
+    if (restores.length >= 4) { kept = { items: items.slice(), ids }; return; }
+    restores.push(now);
+
+    const merged = kept.items.slice();
+    if (merged.length - 1 - at < 8) {
+      const have = new Set(kept.ids);
+      for (const it of items) {
+        const id = unwrapQueueItem(it)?.videoId;
+        if (id && !have.has(id)) { merged.push(it); have.add(id); }
+      }
+    }
+    restoring = true;
+    stableNote = 'stable queue — YouTube rebuilt it, Prism put yours back';
+    stableNoteAt = now;
+    try {
+      q.store.dispatch({ type: 'RESET_ITEMS', payload: merged });
+      q.store.dispatch({ type: 'SET_INDEX', payload: at });
+    } catch (e) {}
+    restoring = false;
+    kept = { items: merged, ids: idsOf(merged) };
+    pushState(true);
   };
 
   // ---------------------------------------------------------------- clock
@@ -838,6 +917,12 @@ enum Bridge {
     noteQueueCause: (label) => { blame(String(label)); return true; },
 
     setQueueTrace: (on) => { queueTrace = !!on; return true; },
+    setStableQueue: (on) => {
+      stableOn = !!on;
+      kept = null;              // start from whatever the queue is now
+      if (stableOn) onQueueStore();
+      return true;
+    },
 
     // 'auto', or a YouTube quality level such as 'hd1080'. Applied now and
     // again on every track, since loading one resets the range.
@@ -1560,6 +1645,68 @@ const allScopeSearch = async (reqId, query) => {
       post({ kind: 'search', requestId: reqId, results: out });
     },
 
+
+    // YouTube Music's Home feed — Quick picks, your mixes, Listen again, new
+    // releases — as the web app gets it for the signed-in account. Shelves are
+    // carousels of either song rows (Quick picks) or two-row cards; a card
+    // opens a page (album, playlist, artist) or plays straight away (a song,
+    // a video, or a mix that is only a playlist id).
+    home: async (reqId) => {
+      const shelves = [];
+      const read = (j) => {
+        for (const car of collect(j, 'musicCarouselShelfRenderer', 30)) {
+          const h = car?.header?.musicCarouselShelfBasicHeaderRenderer;
+          const title = runs(h?.title) || '';
+          const items = [];
+          const seen = new Set();
+          for (const row of (car.contents || [])) {
+            const song = row.musicResponsiveListItemRenderer;
+            if (song) {
+              const p = parseListItem(song);
+              if (p?.type === 'song' && !seen.has(p.track.videoId)) {
+                seen.add(p.track.videoId);
+                items.push({ kind: 'song', title: p.track.title, subtitle: p.track.artist,
+                             artworkURL: p.track.artworkURL, videoId: p.track.videoId,
+                             browseId: null, playlistId: null });
+              }
+              continue;
+            }
+            const r = row.musicTwoRowItemRenderer;
+            if (!r) continue;
+            const nav = r.navigationEndpoint || {};
+            const browseId = nav.browseEndpoint?.browseId || null;
+            const videoId = nav.watchEndpoint?.videoId || null;
+            const playlistId = nav.watchPlaylistEndpoint?.playlistId || nav.watchEndpoint?.playlistId || null;
+            const key = browseId || videoId || playlistId;
+            if (!key || seen.has(key)) continue;
+            // Podcasts (shows MPSP…, episodes MPED…) are not music.
+            if (browseId && /^MP(SP|ED)/.test(browseId)) continue;
+            seen.add(key);
+            const wide = /16_9/.test(r.aspectRatio || '');
+            const kind = videoId ? (wide ? 'video' : 'song')
+                       : browseId ? (browseId.startsWith('UC') ? 'artist'
+                                   : browseId.startsWith('MPRE') ? 'album' : 'playlist')
+                       : 'mix';
+            items.push({ kind, title: runs(r.title) || 'Unknown', subtitle: runs(r.subtitle),
+                         artworkURL: bestThumb(r?.thumbnailRenderer?.musicThumbnailRenderer?.thumbnail, 360),
+                         videoId, browseId, playlistId });
+          }
+          if (title && items.length) shelves.push({ title, strapline: runs(h?.strapline) || null, items });
+        }
+      };
+      // The feed arrives in pages, and the good shelves are not on the first:
+      // measured on a signed-in account, Quick picks was on the second. Four
+      // pages covers what the web app shows before you scroll a long way.
+      let page = await innertube('browse', { browseId: 'FEmusic_home' });
+      read(page);
+      for (let i = 0; i < 3; i++) {
+        const token = collect(page, 'nextContinuationData', 1)[0]?.continuation;
+        if (!token) break;
+        try { page = await innertube('browse', { continuation: token }); read(page); }
+        catch (e) { break; }
+      }
+      post({ kind: 'home', requestId: reqId, shelves });
+    },
 
     library: async (reqId) => {
       const sections = [];

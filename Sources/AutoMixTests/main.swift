@@ -534,6 +534,28 @@ check(follower.period != nil, "one unsure reading does not drop the tempo")
 for _ in 0..<3 { follower.update(nil) }
 check(follower.period == nil, "four readings with no pulse drop the tempo")
 
+// Beat alignment.
+// Incoming beats at 0.25 + k·0.5 in its own time, playing at rate 1; read at
+// media 10.1 at wall 100.0, so its next beat (10.25) lands at wall 100.15.
+let lateBy = BeatAlign.error(incomingMedia: 10.1, readAt: 100, incomingPhase: 0.25,
+                             incomingPeriod: 0.5, rate: 1, outgoingBeat: 99.1, outgoingPeriod: 0.5)
+check(close(lateBy, 0.05, 1e-9), "an incoming beat 50ms after an outgoing one reads as 50ms late")
+check(close(BeatAlign.shift(error: lateBy, rate: 1), 0.05, 1e-9),
+      "a late incoming track is moved forward by the error")
+let earlyBeat = BeatAlign.error(incomingMedia: 10.1, readAt: 100, incomingPhase: 0.25,
+                                incomingPeriod: 0.5, rate: 1, outgoingBeat: 100.25, outgoingPeriod: 0.5)
+check(close(earlyBeat, -0.1, 1e-9), "an incoming beat 100ms before an outgoing one reads as early")
+// Rate 1.04: the next beat is at media 10.13 (0.25 + 19 × 0.52), 0.13 media
+// seconds away — 0.125 wall seconds at 1.04×.
+let stretched = BeatAlign.error(incomingMedia: 10.0, readAt: 50, incomingPhase: 0.25,
+                                incomingPeriod: 0.52, rate: 1.04, outgoingBeat: 50.125, outgoingPeriod: 0.5)
+check(abs(stretched) < 1e-3, "the playback rate is accounted for when finding the next beat")
+check(close(BeatAlign.shift(error: 0.05, rate: 1.04, stall: 0.2), 0.26, 1e-9),
+      "a seek that stalls jumps further by the stall, in the track's own time")
+let halfTimeBeat = BeatAlign.error(incomingMedia: 3.9, readAt: 20, incomingPhase: 0,
+                               incomingPeriod: 1.0, rate: 1, outgoingBeat: 20.1, outgoingPeriod: 0.5)
+check(abs(halfTimeBeat) < 1e-9, "a half-time incoming track aligns to every other outgoing beat")
+
 // MARK: - Result
 
 print("\n\(checks - failures.count)/\(checks) passed")

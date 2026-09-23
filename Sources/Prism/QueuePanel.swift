@@ -32,6 +32,18 @@ struct QueuePanel: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                 UndoButton(model: model)
+                // Lit while Prism is holding the queue steady against YouTube's
+                // own rebuilds of a radio.
+                GlassIconButton(system: model.engine.stableQueue ? "lock.fill" : "lock.open",
+                                size: 11, diameter: 28, active: model.engine.stableQueue) {
+                    model.engine.stableQueue.toggle()
+                    model.flash(model.engine.stableQueue
+                                ? "Queue locked — YouTube can't reshuffle it"
+                                : "Queue unlocked — YouTube may rebuild radios")
+                }
+                .help(model.engine.stableQueue
+                      ? "Queue locked: when YouTube rebuilds a radio on its own, Prism keeps your queue"
+                      : "Queue unlocked: YouTube may replace a radio's upcoming songs")
                 GlassIconButton(system: "shuffle", size: 12, diameter: 28,
                                 active: snap.shuffled ?? false) {
                     model.shuffleQueue()
