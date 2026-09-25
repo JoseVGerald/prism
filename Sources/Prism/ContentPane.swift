@@ -148,6 +148,7 @@ private struct NowPlayingPane: View {
                 HStack(spacing: 18) {
                     if model.ambient.showEqualizers {
                         EqualizerView(palette: model.palette, isPlaying: animatingBars,
+                                      audio: model.equalizerAudio, mirrored: true,
                                       seed: 0, maxBlocks: 6, block: 5, gap: 2.5)
                             .frame(height: 240)
                             .frame(maxWidth: .infinity)
@@ -173,6 +174,7 @@ private struct NowPlayingPane: View {
 
                     if model.ambient.showEqualizers {
                         EqualizerView(palette: model.palette, isPlaying: animatingBars,
+                                      audio: model.equalizerAudio,
                                       seed: 137, maxBlocks: 6, block: 5, gap: 2.5)
                             .frame(height: 240)
                             .frame(maxWidth: .infinity)

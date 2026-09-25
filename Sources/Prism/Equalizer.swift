@@ -1,14 +1,21 @@
 import SwiftUI
 
-/// Decorative block equalizer flanking the cover art.
+/// Block equalizer flanking the cover art.
 ///
-/// Deliberately not tied to the audio: the sound lives inside the engine's
-/// webview and tapping it risks breaking playback. Column heights are smooth
-/// layered sine noise with no positional envelope — every column has the same
-/// expected amplitude ("taper C").
+/// Driven by the song itself when `audio` is given: each column is a slice
+/// of the spectrum Prism hears through system audio capture (`LiveAudio`),
+/// lowest pitch nearest the cover on both sides. It never touches the
+/// engine's webview — capture listens to what the Mac plays. With no audio to
+/// hear (capture off, permission missing) it falls back to its old decorative
+/// motion, smooth layered sine noise.
 struct EqualizerView: View {
     let palette: ArtPalette
     let isPlaying: Bool
+    /// Where to hear the music from. Nil keeps the decorative motion.
+    var audio: (any AudioBandsSource)? = nil
+    /// Treble on the left and bass on the right, for the equalizer left of
+    /// the cover, so the two sides mirror each other.
+    var mirrored = false
     /// Offsets the noise so the left and right sides never mirror each other.
     var seed: Double = 0
     var maxBlocks: Int = 8
@@ -19,12 +26,17 @@ struct EqualizerView: View {
     /// is not worth the same rate as the pair either side of the cover art.
     var fps: Double = 15
 
+    @State private var holder = "equalizer \(UUID().uuidString)"
+
     var body: some View {
         // One Canvas, no SwiftUI blur. Blurred glow layers meant an offscreen
         // gaussian every frame for each of two equalizers, which sat at ~30%
         // CPU forever. The halo below is painted instead, for the same look at
         // a fraction of the cost. Paused freezes the timeline entirely.
-        TimelineView(.animation(minimumInterval: 1.0 / fps, paused: !isPlaying)) { tl in
+        // Hearing the song, at least 20fps: slower than that and the bars
+        // visibly lag the hits they are showing.
+        TimelineView(.animation(minimumInterval: 1.0 / (audio == nil ? fps : max(fps, 20)),
+                                paused: !isPlaying)) { tl in
             blocks(tl.date.timeIntervalSinceReferenceDate)
         }
         // Painted by Metal rather than on the CPU. Profiled with the window in
@@ -33,6 +45,11 @@ struct EqualizerView: View {
         // clicks. Stepped LED bars also lose nothing at 15fps.
         .drawingGroup()
         .allowsHitTesting(false)
+        // Capture runs only while an equalizer that wants it is on screen and
+        // the music is playing.
+        .onAppear { audio?.hold(holder, isPlaying) }
+        .onChange(of: isPlaying) { _, playing in audio?.hold(holder, playing) }
+        .onDisappear { audio?.hold(holder, false) }
     }
 
     private func blocks(_ t: Double) -> some View {
@@ -56,8 +73,11 @@ struct EqualizerView: View {
             let spanH = (CGFloat(peak) * 2 + 1) * pitch
 
             var heights = [Int](repeating: 0, count: columns)
+            let spectrum = audio?.bands.spectrum ?? []
             for c in 0..<columns {
-                heights[c] = Int((amplitude(c, t) * Double(peak)).rounded())
+                let a = spectrum.isEmpty ? amplitude(c, t)
+                                         : heard(spectrum, column: c, of: columns)
+                heights[c] = Int((a * Double(peak)).rounded())
             }
 
             // Painted in three passes: a soft colour halo, a dark rim that stops
@@ -116,6 +136,17 @@ struct EqualizerView: View {
             pass(pad: 1.1) { _ in .color(.black.opacity(0.45)) }
             pass(pad: 0.0) { .color(palette.color(at: $0)) }
         }
+    }
+
+    /// The column's slice of the spectrum, interpolated between bands. A
+    /// sliver of floor keeps a quiet band from vanishing entirely.
+    private func heard(_ spectrum: [Double], column: Int, of columns: Int) -> Double {
+        var x = (Double(column) + 0.5) / Double(columns)
+        if mirrored { x = 1 - x }
+        let pos = x * Double(spectrum.count - 1)
+        let i = Int(pos), f = pos - Double(i)
+        let v = spectrum[i] + (spectrum[min(i + 1, spectrum.count - 1)] - spectrum[i]) * f
+        return min(max(v, 0.04), 1)
     }
 
     /// Layered sines at incommensurate rates: organic, non-repeating, cheap.

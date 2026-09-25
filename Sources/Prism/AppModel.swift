@@ -99,6 +99,11 @@ final class AppModel {
     #endif
 
     /// Where the light reads the music from, on platforms that can hear it.
+    /// What the equalizers listen to: the live audio, unless turned off.
+    var equalizerAudio: (any AudioBandsSource)? {
+        ambient.equalizersHear ? audioSource : nil
+    }
+
     var audioSource: (any AudioBandsSource)? {
         #if canImport(AppKit)
         return liveAudio
@@ -291,6 +296,7 @@ final class AppModel {
             // outgoing beat is locked by the time a 30-second fade starts.
             && d > 60 && (t < 45 || d - t < max(50, transitions.seconds + 25))
         liveAudio.set("automix", want)
+        if !ambient.equalizersHear { liveAudio.releaseAll(prefix: "equalizer ") }
         engine.needPreciseClock("tempo memory", liveAudio.running)
 
         let now = Date()

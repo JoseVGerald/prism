@@ -53,6 +53,17 @@ final class LiveAudio: NSObject, AudioBandsSource {
         + "then quit and reopen Prism."
 
     /// Hold capture open on behalf of `who`, or let go. Idempotent.
+    func hold(_ who: String, _ wanted: Bool) { set(who, wanted) }
+
+    /// Lets go on behalf of every holder whose name starts with `prefix`.
+    func releaseAll(prefix: String) {
+        let gone = holders.filter { $0.hasPrefix(prefix) }
+        guard !gone.isEmpty else { return }
+        holders.subtract(gone)
+        if holders.isEmpty { gaveUp = false }
+        reconcile()
+    }
+
     func set(_ who: String, _ wanted: Bool) {
         if wanted { holders.insert(who) } else { holders.remove(who) }
         if holders.isEmpty { gaveUp = false }
@@ -96,14 +107,25 @@ final class LiveAudio: NSObject, AudioBandsSource {
     /// An in-flight start or stop is never cancelled — tearing an SCStream
     /// down half-started is how captures leak. It finishes, then this runs
     /// again and catches up with whatever changed meanwhile.
+    @ObservationIgnored private var lastState = ""
+
+    /// When a start last failed. Retried every 15 seconds while something
+    /// still wants capture — a locked screen offers no display to capture, and
+    /// capture used to stay off after unlocking until every holder let go.
+    @ObservationIgnored private var gaveUpAt = Date.distantPast
+
     private func reconcile() {
+        if gaveUp, !holders.isEmpty, Date().timeIntervalSince(gaveUpAt) > 15 { gaveUp = false }
+        let state = "wanted by [\(holders.sorted().joined(separator: ", "))] running=\(running) "
+            + "gaveUp=\(gaveUp) refused=\(permissionRefused) busy=\(transition != nil)"
+        if state != lastState { lastState = state; log(state) }
         guard transition == nil else { return }
         let want = !holders.isEmpty
         guard want != running, !(want && gaveUp) else { return }
         transition = Task { [weak self] in
             guard let self else { return }
             if want { await self.start() } else { await self.stop() }
-            if want && !self.running { self.gaveUp = true }
+            if want && !self.running { self.gaveUp = true; self.gaveUpAt = Date() }
             self.transition = nil
             self.reconcile()
         }
@@ -116,7 +138,10 @@ final class LiveAudio: NSObject, AudioBandsSource {
             let content = try await SCShareableContent.excludingDesktopWindows(
                 false, onScreenWindowsOnly: false)
             guard let display = content.displays.first else {
-                failure = "No display to capture audio from"; return
+                // What a locked screen looks like from here.
+                failure = "No display to capture audio from"
+                log("capture could not start: no display (is the screen locked?)")
+                return
             }
             let config = SCStreamConfiguration()
             config.capturesAudio = true
@@ -314,10 +339,37 @@ private final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @
         }
 
         followTempo(mags, now: now)
+        smooth.spectrum = spectrum(mags)
 
         guard now.timeIntervalSince(lastPost) >= 1.0 / 30.0 else { return }
         lastPost = now
         publish(smooth)
+    }
+
+    // The equalizers' spectrum: 32 bands spaced by pitch, 40 Hz to 16 kHz.
+    private static let spectrumEdges: [Int] = {
+        var edges: [Int] = []
+        for i in 0...32 {
+            let f = 40 * pow(16_000.0 / 40, Double(i) / 32)
+            var bin = max(Int((f / (48_000.0 / 1024)).rounded()), 1)
+            if let last = edges.last, bin <= last { bin = last + 1 }
+            edges.append(min(bin, 511))
+        }
+        return edges
+    }()
+    private var meter = SpectrumMeter(bands: 32)
+
+    /// The equalizers' bars: power in each of the 32 bands, read by the meter.
+    private func spectrum(_ mags: [Float]) -> [Double] {
+        let edges = Self.spectrumEdges
+        var power = [Double](repeating: 0, count: 32)
+        for i in 0..<32 {
+            let lo = edges[i], hi = max(edges[i + 1], lo + 1)
+            var sum: Float = 0
+            for k in lo..<min(hi, mags.count) { sum += mags[k] }
+            power[i] = Double(sum) / Double(hi - lo)
+        }
+        return meter.update(power)
     }
 
     /// Feeds the tempo tracker one onset-strength sample, and once a second
@@ -368,7 +420,9 @@ private final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @
         let heard = e.map { String(format: "heard %.1f BPM conf %.2f", 60 / $0.period, $0.confidence) }
             ?? "heard nothing"
         let locked = follower.period.map { String(format: "locked %.1f BPM", 60 / $0) } ?? "unlocked"
-        let line = "\(Date().formatted(.iso8601.time(includingFractionalSeconds: true))) \(heard) · \(locked)\n"
+        let ticks = Array("▁▂▃▄▅▆▇█")
+        let bars = String(smooth.spectrum.map { ticks[min(Int($0 * 8), 7)] })
+        let line = "\(Date().formatted(.iso8601.time(includingFractionalSeconds: true))) \(heard) · \(locked) · \(bars)\n"
         if let h = try? FileHandle(forWritingTo: tempoLog) {
             h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
         } else {

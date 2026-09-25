@@ -15,12 +15,89 @@ struct QueuePanel: View {
     private var snap: EngineSnapshot { model.engine.snapshot }
 
     private static let stride: CGFloat = QueueRow.height + 2
+    private static let motion = Animation.spring(response: 0.36, dampingFraction: 0.86)
 
     /// Where the dragged row would land, clamped to the queue.
     private var dragTarget: Int? {
         guard let from = dragFrom else { return nil }
         let steps = Int((dragBy / Self.stride).rounded())
-        return min(max(from + steps, 0), snap.queue.count - 1)
+        return min(max(from + steps, 0), rows.count - 1)
+    }
+
+    /// A row's identity: the song, and which copy of it this is — not where
+    /// it sits. Keyed by position, removing one row renamed every row below
+    /// it, so SwiftUI faded them all out and back in instead of sliding them
+    /// up; a move or an insert did the same to everything in between.
+    private struct Row: Identifiable {
+        let entry: QueueEntry
+        let id: String
+    }
+
+    /// Edits shown the moment they are made, before YouTube confirms them:
+    /// rows being removed, and the order after a move. Each clears itself
+    /// once the queue agrees, or after two seconds if it never does.
+    @State private var removing: Set<String> = []
+    @State private var movedOrder: [String]?
+
+    private var rows: [Row] {
+        var copies: [String: Int] = [:]
+        var out = snap.queue.map { e -> Row in
+            let n = copies[e.videoId, default: 0]
+            copies[e.videoId] = n + 1
+            return Row(entry: e, id: "\(e.videoId)#\(n)")
+        }
+        out.removeAll { removing.contains($0.id) }
+        if let order = movedOrder {
+            let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+            if out.allSatisfy({ rank[$0.id] != nil }) {
+                out.sort { rank[$0.id]! < rank[$1.id]! }
+            }
+        }
+        return out
+    }
+
+    private func remove(_ row: Row) {
+        withAnimation(Self.motion) { _ = removing.insert(row.id) }
+        model.removeFromQueue(row.entry)
+        expire()
+    }
+
+    /// Moves the row showing at `slot` to `target`, on screen at once.
+    private func move(from slot: Int, to target: Int) {
+        let current = rows
+        guard current.indices.contains(slot), current.indices.contains(target), slot != target else { return }
+        var order = current.map(\.id)
+        let id = order.remove(at: slot)
+        order.insert(id, at: target)
+        withAnimation(Self.motion) { movedOrder = order }
+        model.moveInQueue(from: current[slot].entry.index, to: current[target].entry.index)
+        expire()
+    }
+
+    @State private var expiry: Task<Void, Never>?
+    private func expire() {
+        expiry?.cancel()
+        expiry = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            withAnimation(Self.motion) { removing = []; movedOrder = nil }
+        }
+    }
+
+    /// Drops whatever the queue now agrees with.
+    private func reconcile() {
+        let ids = Set(rowsFromSnapshot.map(\.id))
+        removing = removing.filter { ids.contains($0) }
+        if let order = movedOrder, rowsFromSnapshot.map(\.id) == order { movedOrder = nil }
+    }
+
+    private var rowsFromSnapshot: [Row] {
+        var copies: [String: Int] = [:]
+        return snap.queue.map { e in
+            let n = copies[e.videoId, default: 0]
+            copies[e.videoId] = n + 1
+            return Row(entry: e, id: "\(e.videoId)#\(n)")
+        }
     }
 
     var body: some View {
@@ -78,26 +155,30 @@ struct QueuePanel: View {
                             // track lost its highlight — until the panel was
                             // torn down and rebuilt. ForEach's own element ids
                             // are what the scroll reader targets below.
-                            ForEach(snap.queue) { entry in
-                                row(entry)
+                            ForEach(Array(rows.enumerated()), id: \.element.id) { slot, row in
+                                self.row(row, slot: slot)
+                                    .transition(.asymmetric(
+                                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                                        removal: .opacity.combined(with: .scale(scale: 0.9, anchor: .leading))))
                             }
                         }
                         // Shuffling rewrites most of the list at once. Without
                         // this the rows swap instantly and it is impossible to
                         // see that anything happened, let alone that the track
-                        // you are on stayed put.
-                        .animation(.spring(response: 0.42, dampingFraction: 0.86),
-                                   value: snap.queue.map(\.id))
+                        // you are on stayed put. Stable row identities are what
+                        // let it slide rows rather than cross-fade them.
+                        .animation(Self.motion, value: rows.map(\.id))
                         .padding(.horizontal, 8).padding(.bottom, 12)
                     }
                     .scrollDisabled(dragFrom != nil)
                     .onChange(of: snap.queueIndex) { _, new in
-                        guard new >= 0, new < snap.queue.count, dragFrom == nil else { return }
-                        let id = snap.queue[new].id
+                        guard dragFrom == nil,
+                              let row = rows.first(where: { $0.entry.index == new }) else { return }
                         withAnimation(.easeInOut(duration: 0.35)) {
-                            proxy.scrollTo(id, anchor: .center)
+                            proxy.scrollTo(row.id, anchor: .center)
                         }
                     }
+                    .onChange(of: snap.queue.map(\.videoId)) { _, _ in reconcile() }
                 }
             }
         }
@@ -113,21 +194,24 @@ struct QueuePanel: View {
     }
 
     @ViewBuilder
-    private func row(_ entry: QueueEntry) -> some View {
-        let lifted = dragFrom == entry.index
-        QueueRow(model: model, entry: entry,
-                 isCurrent: entry.index == snap.queueIndex,
-                 total: snap.queue.count,
-                 lifted: lifted)
-            .offset(y: lifted ? dragBy : shift(for: entry.index))
+    private func row(_ row: Row, slot: Int) -> some View {
+        let lifted = dragFrom == slot
+        let count = rows.count
+        QueueRow(model: model, entry: row.entry,
+                 isCurrent: row.entry.index == snap.queueIndex,
+                 slot: slot, total: count,
+                 lifted: lifted,
+                 onRemove: { remove(row) },
+                 onMove: { target in move(from: slot, to: min(max(target, 0), count - 1)) })
+            .offset(y: lifted ? dragBy : shift(for: slot))
             .zIndex(lifted ? 1 : 0)
             .highPriorityGesture(
                 DragGesture(minimumDistance: 8)
                     .onChanged { value in
-                        if dragFrom == nil { dragFrom = entry.index }
+                        if dragFrom == nil { dragFrom = slot }
                         dragBy = value.translation.height
                     }
-                    .onEnded { _ in commit(from: entry.index) }
+                    .onEnded { _ in commit(from: slot) }
             )
     }
 
@@ -141,10 +225,17 @@ struct QueuePanel: View {
 
     private func commit(from: Int) {
         let to = dragTarget
-        dragFrom = nil
-        dragBy = 0
-        guard let to, to != from else { return }
-        model.moveInQueue(from: from, to: to)
+        guard let to, to != from else {
+            withAnimation(Self.motion) { dragFrom = nil; dragBy = 0 }
+            return
+        }
+        // Reorder and settle in one motion, so the row glides into its new
+        // place instead of snapping back and then jumping when YouTube agrees.
+        withAnimation(Self.motion) {
+            dragFrom = nil
+            dragBy = 0
+        }
+        move(from: from, to: to)
     }
 }
 
@@ -152,8 +243,12 @@ private struct QueueRow: View {
     @Bindable var model: AppModel
     let entry: QueueEntry
     let isCurrent: Bool
+    /// Where the row shows, which the menu's moves are counted from.
+    let slot: Int
     let total: Int
     var lifted = false
+    let onRemove: () -> Void
+    let onMove: (Int) -> Void
 
     /// Fixed so the drag gesture can convert travel into whole rows.
     static let height: CGFloat = 46
@@ -214,7 +309,7 @@ private struct QueueRow: View {
                     .help("Download for offline")
 
                     Button {
-                        model.removeFromQueue(entry)
+                        onRemove()
                     } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 10, weight: .semibold))
@@ -253,14 +348,14 @@ private struct QueueRow: View {
         .contextMenu {
             Button("Play") { model.engine.jump(to: entry.index) }
             Divider()
-            Button("Move to Top") { model.moveInQueue(from: entry.index, to: 0) }
-                .disabled(entry.index == 0)
-            Button("Move Up") { model.moveInQueue(from: entry.index, to: entry.index - 1) }
-                .disabled(entry.index == 0)
-            Button("Move Down") { model.moveInQueue(from: entry.index, to: entry.index + 1) }
-                .disabled(entry.index >= total - 1)
-            Button("Move to Bottom") { model.moveInQueue(from: entry.index, to: total - 1) }
-                .disabled(entry.index >= total - 1)
+            Button("Move to Top") { onMove(0) }
+                .disabled(slot == 0)
+            Button("Move Up") { onMove(slot - 1) }
+                .disabled(slot == 0)
+            Button("Move Down") { onMove(slot + 1) }
+                .disabled(slot >= total - 1)
+            Button("Move to Bottom") { onMove(total - 1) }
+                .disabled(slot >= total - 1)
             Divider()
             Divider()
             Button("Download for Offline") {
@@ -268,7 +363,7 @@ private struct QueueRow: View {
                                        artist: entry.artist, artworkURL: entry.artworkURL)
             }
             Button("Remove from Queue", role: .destructive) {
-                model.removeFromQueue(entry)
+                onRemove()
             }
         }
     }

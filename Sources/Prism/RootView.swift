@@ -445,7 +445,8 @@ private struct CompactNowPlaying: View {
                     if !model.videoMode {
                         HStack(spacing: 26) {
                             EqualizerView(palette: model.palette,
-                                          isPlaying: snap.playback.isPlaying && model.windowVisible, seed: 0)
+                                          isPlaying: snap.playback.isPlaying && model.windowVisible,
+                                          audio: model.equalizerAudio, mirrored: true, seed: 0)
                                 .frame(height: art)
                                 .frame(maxWidth: .infinity)
 
@@ -471,7 +472,8 @@ private struct CompactNowPlaying: View {
                                 .help("Click to exit compact mode")
 
                             EqualizerView(palette: model.palette,
-                                          isPlaying: snap.playback.isPlaying && model.windowVisible, seed: 137)
+                                          isPlaying: snap.playback.isPlaying && model.windowVisible,
+                                          audio: model.equalizerAudio, seed: 137)
                                 .frame(height: art)
                                 .frame(maxWidth: .infinity)
                         }

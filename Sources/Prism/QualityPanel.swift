@@ -142,6 +142,19 @@ struct SettingsPanel: View {
                      + "default; compact mode keeps both.")
                     .font(.caption2).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Toggle("Follow the music", isOn: Binding(get: { ambient.equalizersHear },
+                                                         set: { ambient.equalizersHear = $0 }))
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .font(.callout)
+                    .padding(.top, 4)
+                Text("Every equalizer — here, in the notch and in compact mode — shows "
+                     + "the song's real spectrum, bass nearest the cover. It hears the "
+                     + "music through the same capture as Live audio, so the recording "
+                     + "indicator shows while one is on screen and playing. Off, they "
+                     + "go back to decorative motion.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Divider().opacity(0.5)

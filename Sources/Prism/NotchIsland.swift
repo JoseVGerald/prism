@@ -323,6 +323,7 @@ struct NotchIslandView: View {
                 if live {
                     EqualizerView(palette: model.palette,
                                   isPlaying: snap.playback.isPlaying,
+                                  audio: model.equalizerAudio,
                                   seed: 3, maxBlocks: 3, block: 2, gap: 2, fps: 10)
                         .frame(width: 26, height: notch.height - 8)
                         .padding(.leading, 5)
@@ -367,6 +368,7 @@ struct NotchIslandView: View {
 
             HStack(spacing: 14) {
                 EqualizerView(palette: model.palette, isPlaying: snap.playback.isPlaying,
+                              audio: model.equalizerAudio, mirrored: true,
                               seed: 0, maxBlocks: 5, block: 4, gap: 3, fps: 12)
                     .frame(width: 96, height: 92)
 
@@ -375,6 +377,7 @@ struct NotchIslandView: View {
                     .shadow(color: .black.opacity(0.5), radius: 10, y: 3)
 
                 EqualizerView(palette: model.palette, isPlaying: snap.playback.isPlaying,
+                              audio: model.equalizerAudio,
                               seed: 7, maxBlocks: 5, block: 4, gap: 3, fps: 12)
                     .frame(width: 96, height: 92)
             }

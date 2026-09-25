@@ -13,6 +13,9 @@ struct AudioBands: Equatable, Sendable {
     var tempo: Double?
     /// When a beat landed — any beat; the rest fall every `tempo` from it.
     var beatAt: Date?
+    /// Loudness by pitch, 0…1, lowest first: 32 bands from 40 Hz to 16 kHz,
+    /// for the equalizers. Empty when nothing is being heard.
+    var spectrum: [Double] = []
 
     static let silent = AudioBands()
 }
@@ -23,6 +26,8 @@ struct AudioBands: Equatable, Sendable {
 @MainActor
 protocol AudioBandsSource: AnyObject {
     var bands: AudioBands { get }
+    /// Keeps the audio being heard on behalf of `who` while `wanted`.
+    func hold(_ who: String, _ wanted: Bool)
 }
 
 /// A line of light drawn around a rectangle's perimeter, coloured by the

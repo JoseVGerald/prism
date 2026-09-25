@@ -567,6 +567,38 @@ let halfTimeBeat = BeatAlign.error(incomingMedia: 3.9, readAt: 20, incomingPhase
                                incomingPeriod: 1.0, rate: 1, outgoingBeat: 20.1, outgoingPeriod: 0.5)
 check(abs(halfTimeBeat) < 1e-9, "a half-time incoming track aligns to every other outgoing beat")
 
+// MARK: - Spectrum meter
+
+suite("Spectrum meter")
+
+var steady = SpectrumMeter(bands: 2)
+var steadyLevel: [Double] = []
+for _ in 0..<600 { steadyLevel = steady.update([1e-3, 1e-5]) }
+check(abs(steadyLevel[0] - 4.5 / 17) < 0.03,
+      "a steady band settles about a quarter up (got \(steadyLevel[0]))")
+let hit = steady.update([1e-3 * 16, 1e-5])        // +12 dB
+var afterHit = hit
+for _ in 0..<3 { afterHit = steady.update([1e-3 * 16, 1e-5]) }
+check(afterHit[0] > 0.8, "a 12 dB hit jumps near the top within a few frames (got \(afterHit[0]))")
+var fall = afterHit
+for _ in 0..<20 { fall = steady.update([1e-3, 1e-5]) }
+check(fall[0] < afterHit[0] - 0.3, "after a hit it falls back within about a fifth of a second")
+
+var flicker = SpectrumMeter(bands: 1)
+var rng2 = Noise(state: 9)
+var total = 0.0
+for i in 0..<2000 {
+    let db = -30 + (rng2.next() - 0.5) * 8            // ±4 dB frame to frame
+    let v = flicker.update([pow(10, db / 10)])[0]
+    if i >= 1000 { total += v }
+}
+check(total / 1000 < 0.55, "frame-to-frame flicker does not pin the bars near the top (mean \(total / 1000))")
+
+var floorMeter = SpectrumMeter(bands: 2)
+var floorLevel: [Double] = []
+for _ in 0..<300 { floorLevel = floorMeter.update([1e-2, 1e-2 * 1e-7]) }   // 70 dB down
+check(floorLevel[1] == 0, "a band 70 dB under the loudest reads as nothing")
+
 // MARK: - Result
 
 print("\n\(checks - failures.count)/\(checks) passed")

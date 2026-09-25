@@ -61,6 +61,7 @@ final class AmbientSettings {
         static let lyricStyle = "prism.ambient.lyricStyle"
         static let flow = "prism.ambient.flow"
         static let lyricsDelay = "prism.lyrics.delay"
+        static let equalizersHear = "prism.ambient.equalizersHear"
     }
 
     /// The rim of light around the window. On by default — it is the feature.
@@ -84,6 +85,8 @@ final class AmbientSettings {
     /// Seconds the lyrics are held back (negative brings them forward), for
     /// when a source's timing sits early or late for this Mac's audio path.
     var lyricsDelay: Double { didSet { store(lyricsDelay, Key.lyricsDelay) } }
+    /// Equalizers follow the song's real spectrum rather than decorative motion.
+    var equalizersHear: Bool { didSet { store(equalizersHear, Key.equalizersHear) } }
 
     /// Whether the full-screen ambient surface is up right now. Not persisted:
     /// a restart should never come back into it.
@@ -109,5 +112,6 @@ final class AmbientSettings {
         // A tenth of a second late by default: reported running slightly
         // ahead even after the clock and pacing fixes.
         lyricsDelay = d.object(forKey: Key.lyricsDelay) as? Double ?? 0.1
+        equalizersHear = d.object(forKey: Key.equalizersHear) as? Bool ?? true
     }
 }
