@@ -24,6 +24,11 @@ final class TempoMemory {
         var duration: Double?
         /// Heard on this exact video, rather than on another version of it.
         var direct: Bool?
+        /// Where a bar starts, in the song's own seconds, modulo a bar.
+        var barPhase: Double?
+        /// Where the song gets big — its drop or first hook — on a downbeat,
+        /// in its own seconds. Where a switch brings it in.
+        var dropAt: Double?
         var heardAt: Date
     }
 
@@ -43,12 +48,18 @@ final class TempoMemory {
     var count: Int { store.count }
 
     func remember(_ videoId: String, period: Double, phase: Double?, duration: Double,
-                  direct: Bool) {
+                  direct: Bool, barPhase: Double? = nil, dropAt: Double? = nil) {
         // What was heard on the video itself beats what was heard on another
         // version of it.
-        if !direct, store[videoId]?.direct == true { return }
+        let known = store[videoId]
+        if !direct, known?.direct == true { return }
+        // A drop or bar heard once is kept until a better reading replaces it.
+        let same = known.map { abs($0.period / period - 1) < 0.03 } ?? false
         store[videoId] = Heard(period: period, phase: phase, duration: duration,
-                               direct: direct, heardAt: Date())
+                               direct: direct,
+                               barPhase: barPhase ?? (same ? known?.barPhase : nil),
+                               dropAt: dropAt ?? (same ? known?.dropAt : nil),
+                               heardAt: Date())
         // Oldest out past a few thousand songs; a few hundred KB at most.
         if store.count > 4000,
            let oldest = store.min(by: { $0.value.heardAt < $1.value.heardAt })?.key {

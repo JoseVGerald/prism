@@ -1,5 +1,8 @@
 import SwiftUI
 import Observation
+#if canImport(AutoMixCore)
+import AutoMixCore
+#endif
 #if canImport(AppKit)
 import CoreGraphics
 #endif
@@ -160,7 +163,7 @@ final class AppModel {
         startIdleWatch()
         transitions.liveBeat = { [liveAudio] in
             guard let p = liveAudio.bands.tempo, let at = liveAudio.bands.beatAt else { return nil }
-            return (p, at)
+            return (p, at, liveAudio.bands.downbeatAt)
         }
         #endif
         if !UserDefaults.standard.bool(forKey: Self.seenKey) {
@@ -321,7 +324,28 @@ final class AppModel {
         // Where that beat fell in the song's own time.
         var phase = engine.smoothTime(at: beatAt).truncatingRemainder(dividingBy: period)
         if phase < 0 { phase += period }
-        tempoMemory.remember(id, period: period, phase: phase, duration: snap.duration, direct: true)
+        // The bar and the drop, when the kick has said which beat is the one.
+        var barPhase: Double?
+        var dropAt: Double?
+        if let down = b.downbeatAt {
+            let bar = period * 4
+            var p = engine.smoothTime(at: down).truncatingRemainder(dividingBy: bar)
+            if p < 0 { p += bar }
+            barPhase = p
+            // Only this song's beats, and only the last 40 seconds — further
+            // back, a seek would make the mapping to song time wrong.
+            let since = max(seen.at.addingTimeInterval(1), now.addingTimeInterval(-40))
+            let heard = b.recentBeats.filter { $0.at > since }
+            if heard.count >= 24,
+               let first = heard.firstIndex(where: {
+                   let n = Int(($0.at.timeIntervalSince(down) / period).rounded())
+                   return ((n % 4) + 4) % 4 == 0 }),
+               let i = DropFinder.drop(energies: heard.map(\.energy), firstDownbeat: first) {
+                dropAt = engine.smoothTime(at: heard[i].at)
+            }
+        }
+        tempoMemory.remember(id, period: period, phase: phase, duration: snap.duration, direct: true,
+                             barPhase: barPhase, dropAt: dropAt)
         // Also under the queue row's id: YouTube often plays another version
         // from the one the queue lists (measured, row oCveByMXd_0 played as
         // sMrruvN56HA, and an "Instrumental" row played as the vocal), and a
@@ -331,7 +355,8 @@ final class AppModel {
             let row = snap.queue[snap.queueIndex]
             if row.videoId != id {
                 tempoMemory.remember(row.videoId, period: period, phase: phase,
-                                     duration: snap.duration, direct: false)
+                                     duration: snap.duration, direct: false,
+                                     barPhase: barPhase, dropAt: dropAt)
             }
         }
     }

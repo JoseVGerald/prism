@@ -121,6 +121,26 @@ final class Transitions {
     /// Longest blend the slider offers, and the most AutoMix will plan.
     static let maximumBlend: Double = 30
 
+    /// How one song hands to the next.
+    enum Style: String, CaseIterable {
+        /// A long crossfade: both songs meet in the middle.
+        case blend
+        /// A DJ switch: the new song sneaks in underneath for a few bars and
+        /// everything swaps on the one, the new song entering at its drop.
+        case switchCut = "switch"
+    }
+
+    var style: Style = Style(rawValue: UserDefaults.standard.string(forKey: "prism.mixStyle") ?? "")
+        ?? .switchCut {
+        didSet { UserDefaults.standard.set(style.rawValue, forKey: "prism.mixStyle") }
+    }
+
+    /// The moment of the switch, and the incoming track's position that has
+    /// to land on it (its drop, or a bar line), while a switch is under way.
+    private var switchAt: Date?
+    private var switchEntry: Double?
+    private var scheduledStart: Task<Void, Never>?
+
     var seconds: Double = 0 {
         didSet {
             if seconds > 0, seconds < Self.minimumBlend {
@@ -207,7 +227,7 @@ final class Transitions {
     /// The beat grid being heard right now — seconds per beat and when one
     /// landed. Taken at the top of a blend, while it is still the outgoing
     /// song's alone.
-    var liveBeat: (() -> (period: Double, beatAt: Date)?)?
+    var liveBeat: (() -> (period: Double, beatAt: Date, downbeatAt: Date?)?)?
     private var alignTask: Task<Void, Never>?
     /// True only during the swap, when the player legitimately stops for a
     /// moment. Outside it, a *paused* player means the user pressed pause.
@@ -336,7 +356,11 @@ final class Transitions {
         // Load the next track well before it is needed; a cold player takes a
         // couple of seconds to be ready to make sound, and a blend that is now
         // at least six seconds long has to be fully armed before it starts.
-        if remaining < seconds + 18, armedFor != next.videoId {
+        // A switch starts its sneak-in up to a dozen seconds before the switch
+        // itself, which is `seconds` before the end — so it arms that much
+        // earlier too.
+        let armLead = style == .switchCut ? seconds + 30 : seconds + 18
+        if remaining < armLead, armedFor != next.videoId {
             trace("[FADE_MATH] arming \(next.title) — \(String(format: "%.1f", remaining))s left")
             arm(next.videoId)
         }
@@ -346,6 +370,21 @@ final class Transitions {
         // length ends early and takes the last seconds of the outgoing track
         // with it — an 84.9 BPM pair plans 2.83s, so a 6s trigger cut three
         // seconds off the end of every song.
+        if style == .switchCut {
+            if armedFor == next.videoId, pendingPlan == nil {
+                pendingPlan = makeSwitchPlan(outgoing: track.videoId)
+            }
+            // Scheduled once, a little ahead, onto the outgoing song's bar
+            // line nearest the moment `seconds` before its end.
+            if let plan = pendingPlan, scheduledStart == nil, shadowReady,
+               fadingFrom != track.videoId, remaining - seconds <= plan.duration + 2 {
+                scheduleSwitch(from: track.videoId, plan: plan,
+                               target: Date().addingTimeInterval(max(remaining - seconds, 0)),
+                               volume: snap.volume)
+            }
+            return
+        }
+
         if armedFor == next.videoId, pendingPlan == nil {
             pendingPlan = makePlan(outgoing: track.videoId, remaining: remaining)
         }
@@ -590,7 +629,11 @@ final class Transitions {
         // length it claims to be however slow the bridge is.
         let began = Date()
         fadeClock = (began, fade, fadingFrom)
-        startBeatAlignment(began: began, rate: ramp?.incomingRate ?? 1)
+        if let entry = switchEntry, let at = switchAt {
+            startEntryAlignment(began: began, rate: ramp?.incomingRate ?? 1, entry: entry, switchAt: at)
+        } else {
+            startBeatAlignment(began: began, rate: ramp?.incomingRate ?? 1)
+        }
         var lastTraced = -1.0
         while true {
             if Task.isCancelled { return }
@@ -603,7 +646,19 @@ final class Transitions {
             // This pulls the outgoing track down harder and derives the
             // incoming gain from it, so the total power is still exactly 1 and
             // the new track is simply in front sooner.
-            let (out, into) = BlendCurve.duckedPower.gains(at: t)
+            // A switch lands its cut on the bar line itself rather than on
+            // whichever 40ms tick comes after it.
+            if let at = switchAt, at.timeIntervalSinceNow < 0.05 {
+                let wait = at.timeIntervalSinceNow
+                if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+                engine.setVolume(0)
+                fire("(function(){var p=document.querySelector('#movie_player'); if(p) p.setVolume(\(target));})()")
+                trace(String(format: "[SWITCH] cut at %+.0f ms from the bar line",
+                             Date().timeIntervalSince(at) * 1000))
+                break
+            }
+
+            let (out, into) = (style == .switchCut ? BlendCurve.switchCut : .duckedPower).gains(at: t)
 
             engine.setVolume(target * out)
             fire("(function(){var p=document.querySelector('#movie_player'); if(p) p.setVolume(\(target * into));})()")
@@ -978,6 +1033,10 @@ final class Transitions {
         fadeClock = nil
         alignTask?.cancel()
         alignTask = nil
+        scheduledStart?.cancel()
+        scheduledStart = nil
+        switchAt = nil
+        switchEntry = nil
         armedFor = nil
         fadingFrom = nil
         restoreVolume = nil
@@ -1029,6 +1088,142 @@ final class Transitions {
         shadow = nil
     }
 
+    // MARK: Switch
+
+    /// The switch's plan: tempo, how long the sneak-in lasts, and where the
+    /// incoming song starts so its drop arrives on the switch.
+    ///
+    /// No outgoing bend here, unlike a blend: every rate change freezes the
+    /// track it is applied to for about half a second, and in a switch the
+    /// outgoing song is in front until the very end. The incoming track takes
+    /// all of it, set while it is still paused and silent. Tempos may meet at
+    /// 3:2 as well as 1:1 and 2:1 — two beats of one against three of the
+    /// other, the way a 103 BPM track switches into a 155 BPM one.
+    private func makeSwitchPlan(outgoing: String) -> TransitionPlan {
+        var plan = TransitionPlan.fallback(seconds: 4, reason: "switch")
+        plan.curve = .switchCut
+        plan.notes = []
+        switchEntry = nil
+
+        let aBPM = analysisForPlan(outgoing, duration: engine.snapshot.duration, live: true)?.bpm
+        let bBPM = armedFor.flatMap { analysisForPlan($0, duration: 0, live: false)?.bpm }
+        var rate = 1.0, matched = false
+        if let a = aBPM, let b = bBPM {
+            let m = Tempo.match(from: a, to: b, maxPercent: TempoRampPlanner.maxIncomingPercent,
+                                allowTriplet: true)
+            if m.acceptable {
+                rate = m.rate
+                matched = true
+                plan.notes.append(String(format: "switch: %.1f → %.1f BPM, incoming ×%.4f%@", a, b, rate,
+                                         m.triplet ? " (3:2 lock)" : m.foldedOctave ? " (half/double time)" : ""))
+            } else {
+                plan.notes.append(String(format: "switch: %.1f and %.1f BPM don't lock; a short switch", a, b))
+            }
+        } else {
+            plan.notes.append("switch: a tempo is unknown; a short switch on the beat")
+        }
+        // Four bars of sneak-in when the grooves lock — long enough to hear
+        // the new song arrive under the old one — and one bar when they don't,
+        // so two clashing grooves barely meet.
+        let beat = aBPM.map { 60 / $0 } ?? 0.5
+        let beats = matched ? 16 : 4
+        plan.beats = beats
+        plan.duration = Double(beats) * beat
+        if matched, abs(rate - 1) > 1e-4, let a = aBPM {
+            plan.tempoRamp = TempoRamp(meetingBPM: a, outgoingRate: 1, incomingRate: rate, outgoingSteps: [])
+        }
+
+        // Where the incoming song enters: its drop if heard, else its first
+        // bar line far enough in to leave room for the sneak-in.
+        let rowLength = nextTrack(in: engine.snapshot)?.durationText.flatMap(Self.seconds)
+        if let id = armedFor, let heard = heardBeat?(id),
+           // Only the recording that was heard: another version of the song
+           // can have a longer intro, and its drop somewhere else.
+           heard.direct == true || zip(heard.duration.map { [$0] } ?? [], rowLength.map { [$0] } ?? [])
+               .contains(where: { abs($0 - $1) < 1.5 }) {
+            let bar = heard.period * 4
+            var entry = heard.dropAt
+            if entry == nil, let phase = heard.barPhase {
+                let lead = plan.duration * rate
+                entry = phase + ((lead - phase) / bar).rounded(.up) * bar
+            }
+            if let e = entry {
+                plan.startOffsetForIncoming = SwitchTiming.incomingStart(entry: e, overlap: plan.duration,
+                                                                         rate: rate, bar: bar)
+                switchEntry = plan.startOffsetForIncoming + plan.duration * rate
+                plan.notes.append(String(format: "incoming enters at %.1fs%@, starting from %.1fs",
+                                         switchEntry!, heard.dropAt != nil ? " (its drop)" : " (a bar line)",
+                                         plan.startOffsetForIncoming))
+            }
+        }
+        return plan
+    }
+
+    /// "3:45" or "1:02:03" in seconds.
+    private static func seconds(_ text: String) -> Double? {
+        let parts = text.split(separator: ":").compactMap { Double($0) }
+        guard !parts.isEmpty, parts.count <= 3 else { return nil }
+        return parts.reduce(0) { $0 * 60 + $1 }
+    }
+
+    /// Puts the switch on the outgoing song's bar line nearest `target`, and
+    /// starts the sneak-in that far ahead of it.
+    private func scheduleSwitch(from id: String, plan: TransitionPlan, target: Date, volume: Double) {
+        let now = Date()
+        var at = target.timeIntervalSinceReferenceDate
+        if let grid = liveBeat?() {
+            let down = grid.downbeatAt ?? grid.beatAt
+            at = SwitchTiming.switchTime(now: now.timeIntervalSinceReferenceDate, target: at,
+                                         downbeat: down.timeIntervalSinceReferenceDate,
+                                         bar: grid.period * (grid.downbeatAt != nil ? 4 : 1),
+                                         overlap: plan.duration)
+            trace(String(format: "[SWITCH] on %@ in %.2fs", grid.downbeatAt != nil ? "a bar line" : "a beat",
+                         at - now.timeIntervalSinceReferenceDate))
+        } else {
+            at = max(at, now.timeIntervalSinceReferenceDate + plan.duration)
+            trace("[SWITCH] no beat heard — switching on time alone")
+        }
+        let switchDate = Date(timeIntervalSinceReferenceDate: at)
+        switchAt = switchDate
+        let startAt = switchDate.addingTimeInterval(-plan.duration)
+        scheduledStart = Task { [weak self] in
+            let wait = startAt.timeIntervalSinceNow
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+            guard let self, !Task.isCancelled, !self.fading, self.fadingFrom != id else { return }
+            let snap = self.engine.snapshot
+            self.start(from: id, remaining: max(snap.duration - self.engine.smoothTime(), 0.5), volume: volume)
+        }
+    }
+
+    /// Lands the incoming song's entry — its drop, or a bar line — exactly on
+    /// the switch. The same two-seek nudge as beat alignment, measured against
+    /// the switch moment itself rather than the nearest beat, so it also
+    /// fixes a start that came in a beat or two out. Early in the sneak-in,
+    /// while the new song is quiet underneath.
+    private func startEntryAlignment(began: Date, rate: Double, entry: Double, switchAt: Date) {
+        alignTask?.cancel()
+        alignTask = Task { [weak self] in
+            guard let self else { return }
+            for (pass, due) in [0.5, 1.5, 2.5].enumerated() {
+                let wait = began.addingTimeInterval(due).timeIntervalSinceNow
+                if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+                // Leave the last second before the switch alone.
+                guard !Task.isCancelled, self.fading, switchAt.timeIntervalSinceNow > 1,
+                      let r = await self.shadowReading() else { return }
+                let arrives = r.at.addingTimeInterval((entry - r.media) / rate)
+                let error = arrives.timeIntervalSince(switchAt)
+                self.trace(String(format: "[SWITCH] pass %d: the entry would land %+.0f ms from the switch",
+                                  pass, error * 1000))
+                guard pass < 2, abs(error) > 0.03 else { return }
+                let shift = BeatAlign.shift(error: error, rate: rate,
+                                            stall: pass == 0 ? 0 : min(max(error, 0), 0.4))
+                let target = max(r.media + Date().timeIntervalSince(r.at) * rate + shift, 0)
+                self.fire("(function(){var p=document.querySelector('#movie_player'); if(p) p.seekTo(\(target), true);})()")
+                self.incomingOffset += shift
+            }
+        }
+    }
+
     // MARK: Tempo and beats
 
     /// The planner's view of a track: the online lookup, with the tempo Prism
@@ -1069,7 +1264,8 @@ final class Transitions {
         }
         guard let id = armedFor else { return }
         alignTask = Task { [weak self] in
-            await self?.alignBeats(began: began, rate: rate, grid: grid, armed: id)
+            await self?.alignBeats(began: began, rate: rate,
+                                   grid: (grid.period, grid.beatAt), armed: id)
         }
     }
 

@@ -29,6 +29,13 @@ public enum BlendCurve: String, Sendable {
     /// loudness stays flat. The new track is simply in front sooner.
     case duckedPower
 
+    /// A DJ switch. The new song sneaks in underneath — up to about −10 dB,
+    /// never in front — while the old one carries on, easing back a touch in
+    /// the last quarter. At the end both change at once: the old song is gone
+    /// and the new one is at full, on the downbeat. Not power-preserving on
+    /// purpose; the jump in the new song's level *is* the switch.
+    case switchCut
+
     /// How hard `duckedPower` leans on the outgoing track. 1 is plain
     /// equal-power; higher ducks harder. Past about 2.5 the outgoing track
     /// drops away so fast that the overlap stops sounding like a blend.
@@ -40,6 +47,12 @@ public enum BlendCurve: String, Sendable {
         switch self {
         case .equalPower: return (cos(x * .pi / 2), sin(x * .pi / 2))
         case .linear:     return (1 - x, x)
+        case .switchCut:
+            if x >= 1 { return (0, 1) }
+            let rise = min(max((x - 0.1) / 0.6, 0), 1)
+            let into = 0.32 * rise * rise * (3 - 2 * rise)
+            let out = 1 - 0.12 * max(0, (x - 0.75) / 0.25)
+            return (out, into)
         case .duckedPower:
             let out = pow(cos(x * .pi / 2), Self.duckExponent)
             // Derived, not picked: whatever the outgoing gain is, this is the

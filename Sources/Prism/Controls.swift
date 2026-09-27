@@ -139,11 +139,26 @@ struct CrossfadeControl: View {
                 Text("Transitions").font(.headline)
 
                 VStack(alignment: .leading, spacing: 5) {
+                    Picker("", selection: Binding(get: { model.transitions.style },
+                                                  set: { model.transitions.style = $0 })) {
+                        Text("Switch").tag(Transitions.Style.switchCut)
+                        Text("Blend").tag(Transitions.Style.blend)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Text(model.transitions.style == .switchCut
+                         ? "Like a DJ switch: the next song sneaks in under this one for\nfour bars, then everything swaps on the one — the new song\ncoming in at its drop. Tempos lock at 1:1, 2:1 or 3:2."
+                         : "A long crossfade: both songs meet in the middle and the\nnew one gradually takes over.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .padding(.bottom, 4)
                     HStack {
-                        Text("Crossfade").font(.callout)
+                        Text(model.transitions.style == .switchCut ? "Switch" : "Crossfade").font(.callout)
                         Spacer()
                         Text(model.transitions.seconds > 0
-                             ? "\(Int(model.transitions.seconds))s" : "Off")
+                             ? (model.transitions.style == .switchCut
+                                ? "\(Int(model.transitions.seconds))s before the end"
+                                : "\(Int(model.transitions.seconds))s")
+                             : "Off")
                             .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                     }
                     // Off, or six seconds and up. There is nothing between:

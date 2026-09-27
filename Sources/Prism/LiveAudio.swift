@@ -225,6 +225,14 @@ private final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// and the body of most instruments, without the hiss above.
     private let fluxEdges = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 22, 27, 33, 40, 48, 58, 70, 84, 100]
     private var lastDB: [Double] = Array(repeating: 0, count: 19)
+    /// Kick energy summed at each of the four beat positions, slowly
+    /// forgotten, to tell which beat is the one.
+    private var accents = [Double](repeating: 0, count: 4)
+    private var lockedPeriod: Double?
+    /// The beat being filled, and each finished beat's loudness.
+    private var beatIndex: Int?
+    private var beatSum = 0.0, beatCount = 0
+    private var beats: [BeatEnergy] = []
     private var powerPeak = 1e-9
     private let tempoLog: URL? = ProcessInfo.processInfo.environment["PRISM_EVAL"] == "1"
         ? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".prism-eval/tempo.log")
@@ -382,6 +390,8 @@ private final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @
     private func followTempo(_ mags: [Float], now: Date) {
         var loudest = 0.0
         var flux = 0.0
+        var kick = 0.0
+        var body = 0.0
         for i in 0..<(fluxEdges.count - 1) {
             let lo = fluxEdges[i], hi = fluxEdges[i + 1]
             var sum: Float = 0
@@ -390,10 +400,13 @@ private final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @
             loudest = max(loudest, power)
             let db = 10 * log10(max(power, powerPeak * 1e-5))
             flux += max(db - lastDB[i], 0)
+            if i < 4 { kick += max(db - lastDB[i], 0) }       // ~47–230 Hz
+            if i < 16 { body += power }                        // up to ~2.7 kHz
             lastDB[i] = db
         }
         powerPeak = max(powerPeak * 0.9995, loudest)
         tracker.push(flux)
+        followBar(kick: kick, energy: body, now: now)
 
         hopsSinceEstimate += 1
         guard hopsSinceEstimate >= Int(tracker.rate) else { return }
@@ -404,15 +417,52 @@ private final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @
         if let period = follower.period {
             // The follower's anchor is on the tracker's sample clock; carry it
             // forward to the latest beat and pin that to the wall clock.
-            let beats = ((tracker.now - follower.anchor) / period).rounded(.down)
-            let latest = follower.anchor + beats * period
+            let n = ((tracker.now - follower.anchor) / period).rounded(.down)
+            let latest = follower.anchor + n * period
             smooth.tempo = period
             smooth.beatAt = now.addingTimeInterval(latest - tracker.now)
+            // The latest beat that is the one, once the kick has said which.
+            if accents.reduce(0, +) > 0 {
+                let one = BarPhase.downbeat(accents: accents)
+                var k = Int(n)
+                while ((k % 4) + 4) % 4 != one { k -= 1 }
+                smooth.downbeatAt = now.addingTimeInterval(follower.anchor + Double(k) * period - tracker.now)
+            }
+            smooth.recentBeats = beats
         } else {
             smooth.tempo = nil
             smooth.beatAt = nil
+            smooth.downbeatAt = nil
         }
         logTempo(estimate)
+    }
+
+    /// Keeps the bar: which beat carries the kick, and each beat's loudness.
+    /// Starts over when the tempo lock changes — a new song, most likely.
+    private func followBar(kick: Double, energy: Double, now: Date) {
+        guard let period = follower.period else { return }
+        if let locked = lockedPeriod, abs(period / locked - 1) < 0.03 {} else {
+            lockedPeriod = period
+            accents = [0, 0, 0, 0]
+            beats = []
+            beatIndex = nil
+        }
+        let position = (tracker.now - follower.anchor) / period
+        let k = Int(position.rounded())
+        if abs(position - Double(k)) < 0.12 {
+            for i in 0..<4 { accents[i] *= 0.999 }
+            accents[((k % 4) + 4) % 4] += kick
+        }
+        if let current = beatIndex, current != k, beatCount > 0 {
+            let at = now.addingTimeInterval(follower.anchor + Double(current) * period - tracker.now)
+            beats.append(BeatEnergy(at: at, energy: beatSum / Double(beatCount)))
+            if beats.count > 160 { beats.removeFirst(beats.count - 160) }
+            beatSum = 0
+            beatCount = 0
+        }
+        beatIndex = k
+        beatSum += energy
+        beatCount += 1
     }
 
     private func logTempo(_ e: TempoTracker.Beat?) {

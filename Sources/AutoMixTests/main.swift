@@ -599,6 +599,41 @@ var floorLevel: [Double] = []
 for _ in 0..<300 { floorLevel = floorMeter.update([1e-2, 1e-2 * 1e-7]) }   // 70 dB down
 check(floorLevel[1] == 0, "a band 70 dB under the loudest reads as nothing")
 
+// MARK: - Switch
+
+suite("Switch")
+
+let lock = Tempo.match(from: 103, to: 155, maxPercent: 12, allowTriplet: true)
+check(lock.triplet && lock.acceptable, "103 and 155 BPM lock at 3:2 (rate \(lock.rate))")
+check(abs(lock.percentChange) < 1, "a 3:2 lock needs almost no stretch (\(lock.percentChange)%)")
+check(!Tempo.match(from: 103, to: 155, maxPercent: 12).acceptable,
+      "without 3:2 the same pair is out of budget")
+check(!Tempo.match(from: 120, to: 124, maxPercent: 12, allowTriplet: true).triplet,
+      "a pair that already matches is not turned into a 3:2")
+
+let (pre1, pre2) = BlendCurve.switchCut.gains(at: 0.99)
+check(pre1 > 0.85 && pre2 < 0.35, "before the switch the old song leads and the new one is underneath")
+let (post1, post2) = BlendCurve.switchCut.gains(at: 1)
+check(post1 == 0 && post2 == 1, "on the switch the old song is gone and the new one is at full")
+
+// 2s bars from a downbeat at 100: the switch lands on a bar line near the
+// target, never sooner than the overlap allows.
+let sw = SwitchTiming.switchTime(now: 100, target: 109.3, downbeat: 100, bar: 2, overlap: 8)
+check(close(sw, 110, 1e-9), "the switch snaps to the bar line nearest the target (got \(sw))")
+let rushed = SwitchTiming.switchTime(now: 105, target: 106, downbeat: 100, bar: 2, overlap: 8)
+check(rushed >= 113 - 1e-9 && close((rushed - 100).truncatingRemainder(dividingBy: 2), 0, 1e-9),
+      "a target too close is pushed to the first bar line after the overlap (got \(rushed))")
+check(close(SwitchTiming.incomingStart(entry: 30, overlap: 8, rate: 1.05, bar: 2.3), 30 - 8.4, 1e-9),
+      "the incoming starts early enough that its drop arrives on the switch")
+check(close(SwitchTiming.incomingStart(entry: 4, overlap: 8, rate: 1, bar: 2), 0, 1e-9),
+      "an entry too near the start moves a bar at a time until it fits")
+
+var energies = [Double](repeating: 0.2, count: 16) + [Double](repeating: 1.0, count: 32)
+check(DropFinder.drop(energies: energies, firstDownbeat: 0) == 16, "the drop is found on the downbeat where it hits")
+energies = [Double](repeating: 0.7, count: 48)
+check(DropFinder.drop(energies: energies, firstDownbeat: 0) == nil, "a song that never gets bigger has no drop")
+check(BarPhase.downbeat(accents: [1, 5, 2, 4]) == 1, "the beat with the most kick is the one")
+
 // MARK: - Result
 
 print("\n\(checks - failures.count)/\(checks) passed")

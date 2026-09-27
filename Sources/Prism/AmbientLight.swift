@@ -16,8 +16,18 @@ struct AudioBands: Equatable, Sendable {
     /// Loudness by pitch, 0…1, lowest first: 32 bands from 40 Hz to 16 kHz,
     /// for the equalizers. Empty when nothing is being heard.
     var spectrum: [Double] = []
+    /// A beat that is the one — the start of a bar — when the bar can be told.
+    var downbeatAt: Date?
+    /// The last few dozen beats and how loud each was, for finding a drop.
+    var recentBeats: [BeatEnergy] = []
 
     static let silent = AudioBands()
+}
+
+/// One beat and its loudness (raw, not auto-gained, so a drop stays a drop).
+struct BeatEnergy: Equatable, Sendable {
+    var at: Date
+    var energy: Double
 }
 
 /// Anything that can say what the music is doing right now. On macOS that is

@@ -8,15 +8,19 @@ public struct TempoMatch: Equatable, Sendable {
     /// True when the two tempos are related by a factor of two — 85 and 170 are
     /// the same groove counted differently, and need no stretch at all.
     public let foldedOctave: Bool
+    /// True when the two tempos lock at 3:2 — 103 and 155 BPM, say. Two beats
+    /// of one span three of the other, so the grooves meet every half bar.
+    public let triplet: Bool
     /// How far the rate is from 1, as a percentage.
     public var percentChange: Double { (rate - 1) * 100 }
     /// Whether the stretch is small enough to be inaudible.
     public let acceptable: Bool
 
-    public init(rate: Double, foldedOctave: Bool, acceptable: Bool) {
+    public init(rate: Double, foldedOctave: Bool, acceptable: Bool, triplet: Bool = false) {
         self.rate = rate
         self.foldedOctave = foldedOctave
         self.acceptable = acceptable
+        self.triplet = triplet
     }
 }
 
@@ -32,7 +36,8 @@ public enum Tempo {
     /// - Parameter maxPercent: how much stretch is tolerable. Past about 6% the
     ///   change is audible even with pitch correction, and past 10% it sounds
     ///   wrong regardless.
-    public static func match(from a: Double, to b: Double, maxPercent: Double = 6) -> TempoMatch {
+    public static func match(from a: Double, to b: Double, maxPercent: Double = 6,
+                             allowTriplet: Bool = false) -> TempoMatch {
         guard a > 0, b > 0 else {
             return TempoMatch(rate: 1, foldedOctave: false, acceptable: false)
         }
@@ -45,6 +50,21 @@ public enum Tempo {
         while rate < 0.7071 { rate *= 2; folded = true }
 
         let percent = abs((rate - 1) * 100)
+        // A 3:2 lock, when it needs less stretch than the octave fold does and
+        // the fold is out of budget: 103 and 155 BPM are 50% apart as tempos
+        // but 0.3% apart as grooves, two beats against three.
+        if allowTriplet, percent > maxPercent {
+            let options = [2.0 / 3, 3.0 / 2].map { factor -> Double in
+                var r = rate * factor
+                while r > 1.4142 { r /= 2 }
+                while r < 0.7071 { r *= 2 }
+                return r
+            }
+            // The one needing least stretch, not the first that fits.
+            if let r = options.min(by: { abs($0 - 1) < abs($1 - 1) }), abs((r - 1) * 100) <= maxPercent {
+                return TempoMatch(rate: r, foldedOctave: folded, acceptable: true, triplet: true)
+            }
+        }
         return TempoMatch(rate: rate, foldedOctave: folded, acceptable: percent <= maxPercent)
     }
 
