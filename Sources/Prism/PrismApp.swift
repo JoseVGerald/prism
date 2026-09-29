@@ -60,6 +60,9 @@ struct PrismApp: App {
                 Button("Downloads") { model.route = .downloads }
                     .keyboardShortcut("6", modifiers: .command)
                 Divider()
+                Button("New Quick Playlist") { model.makeQuickPlaylist() }
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
+                Divider()
                 Button(model.lyricsMode ? "Hide Lyrics" : "Lyrics") { model.toggleLyrics() }
                     .keyboardShortcut("l", modifiers: .command)
                 Button(model.compact ? "Exit Compact" : "Compact") { model.toggleCompact() }

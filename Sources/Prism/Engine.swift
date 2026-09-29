@@ -256,10 +256,12 @@ final class Engine: NSObject {
         args.map { arg -> String in
             switch arg {
             case let s as String:
-                let escaped = s
-                    .replacingOccurrences(of: "\\", with: "\\\\")
-                    .replacingOccurrences(of: "\"", with: "\\\"")
-                return "\"\(escaped)\""
+                // As a JSON string literal, which is valid JavaScript and
+                // escapes everything a hand-rolled escape missed — a newline in
+                // a typed playlist name used to end the statement early.
+                return (try? JSONEncoder().encode(s)).flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+            case let a as [String]:
+                return (try? JSONEncoder().encode(a)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
             case let b as Bool:   return b ? "true" : "false"
             case let d as Double: return String(d)
             case let i as Int:    return String(i)
@@ -476,6 +478,28 @@ final class Engine: NSObject {
         return try await query("search", [text, scope.params ?? ""], as: Wrapper.self).results
     }
 
+    /// YouTube Music's own listening history, across every device: sections
+    /// like "Today" and "Yesterday", newest first. One entry per song —
+    /// YouTube keeps only its latest play — and no times.
+    struct HistorySection: Decodable {
+        let title: String
+        let tracks: [Track]
+    }
+
+    func youtubeHistory() async throws -> [HistorySection] {
+        struct Wrapper: Decodable { let sections: [HistorySection] }
+        return try await query("history", [], as: Wrapper.self).sections
+    }
+
+    /// Makes a private playlist in the signed-in account. Returns its id.
+    func createPlaylist(title: String, videoIds: [String]) async throws -> String? {
+        struct Result: Decodable { let playlistId: String?; let error: String? }
+        struct Wrapper: Decodable { let result: Result }
+        let r = try await query("createPlaylist", [title, videoIds], as: Wrapper.self).result
+        if let e = r.error { throw EngineError.bridge(e) }
+        return r.playlistId
+    }
+
     func home() async throws -> [HomeShelf] {
         struct Wrapper: Decodable { let shelves: [HomeShelf] }
         return try await query("home", [], as: Wrapper.self).shelves
@@ -524,6 +548,7 @@ extension Engine: WKScriptMessageHandler {
         case "queueChange":
             logQueueChange(data)
         case "search", "library", "playlist", "enqueue", "download", "lyrics", "home",
+             "history", "createPlaylist",
              "audioQuality", "streamQuality":
             if let id = envelope.requestId {
                 pending.removeValue(forKey: id)?(.success(data))

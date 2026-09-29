@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#endif
 
 /// The landing page.
 ///
@@ -11,6 +14,14 @@ import SwiftUI
 struct ForYouPane: View {
     @Bindable var model: AppModel
 
+    /// Songs picked in Recently played, and where a shift-click range starts.
+    @State private var selection: [String] = []
+    @State private var anchor: Int?
+    /// Naming a playlist made from the selection.
+    @State private var naming = false
+    @State private var playlistName = ""
+    @State private var pendingTracks: [Track] = []
+
     private var history: History { model.history }
     private var monthAgo: Date { Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? .distantPast }
 
@@ -22,6 +33,7 @@ struct ForYouPane: View {
                     emptyState
                 } else {
                     heroRow
+                    recentlyPlayed
                     // YouTube's shelves in YouTube's order — songs as a grid,
                     // everything else as cards — with On repeat after the
                     // first two, where it is seen without scrolling far.
@@ -39,6 +51,17 @@ struct ForYouPane: View {
         .task(id: model.engine.snapshot.ready) {
             model.loadHome()
             model.loadSuggestions()
+            model.loadYouTubeHistory()
+        }
+        .alert("Name the playlist", isPresented: $naming) {
+            TextField("Name", text: $playlistName)
+            Button("Create") {
+                model.makePlaylist(from: pendingTracks, named: playlistName)
+                clearSelection()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\(pendingTracks.count) songs, in the order you played them. Saved privately to your YouTube Music library.")
         }
     }
 
@@ -132,6 +155,117 @@ struct ForYouPane: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 46)
+    }
+
+    // MARK: Recently played
+
+    /// Everything played lately — from YouTube's history, so your phone and
+    /// the web count too. Click plays; shift-click one song and then another
+    /// to select everything between; ⌘-click adds or removes one. Right-click
+    /// a selection to make it a playlist.
+    @ViewBuilder
+    private var recentlyPlayed: some View {
+        let songs = Array(model.recentlyPlayed.prefix(40))
+        if !songs.isEmpty {
+            VStack(alignment: .leading, spacing: 11) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Recently played").font(.title3.weight(.semibold))
+                        Text(model.youtubeHistory.isEmpty
+                             ? "From Prism's own log"
+                             : "From your YouTube Music history — every device, not just Prism")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        model.makeQuickPlaylist()
+                    } label: {
+                        Label("Quick playlist", systemImage: "text.badge.plus")
+                            .font(.callout.weight(.medium))
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                    }
+                    .buttonStyle(.plainHit)
+                    .glassEffect(.regular.interactive(), in: .capsule)
+                    .help("Make a playlist of the last 15 songs you listened to")
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: 14) {
+                        ForEach(Array(songs.enumerated()), id: \.element.id) { i, song in
+                            RecentCard(song: song, selected: selection.contains(song.id)) {
+                                tap(i, in: songs)
+                            }
+                            .contextMenu { menu(for: song, in: songs) }
+                        }
+                    }
+                    .padding(.horizontal, 2).padding(.vertical, 4)
+                }
+                if !selection.isEmpty {
+                    HStack(spacing: 10) {
+                        Text("\(selection.count) selected — right-click one to make a playlist")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("Clear") { clearSelection() }
+                            .buttonStyle(.plainHit)
+                            .font(.caption.weight(.medium))
+                    }
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.15), value: selection)
+        }
+    }
+
+    private func tap(_ i: Int, in songs: [AppModel.RecentSong]) {
+        #if canImport(AppKit)
+        let mods = NSEvent.modifierFlags
+        if mods.contains(.shift) {
+            if let a = anchor, songs.indices.contains(a) {
+                selection = songs[min(a, i)...max(a, i)].map(\.id)
+            } else {
+                anchor = i
+                selection = [songs[i].id]
+            }
+            return
+        }
+        if mods.contains(.command) {
+            if let at = selection.firstIndex(of: songs[i].id) { selection.remove(at: at) }
+            else { selection.append(songs[i].id) }
+            anchor = i
+            return
+        }
+        #endif
+        clearSelection()
+        model.engine.play(videoId: songs[i].videoId)
+    }
+
+    @ViewBuilder
+    private func menu(for song: AppModel.RecentSong, in songs: [AppModel.RecentSong]) -> some View {
+        if selection.contains(song.id), selection.count > 1 {
+            // In the order they were played: the list is newest first.
+            let picked = songs.filter { selection.contains($0.id) }.reversed().map(\.track)
+            Button("Make a Playlist from \(picked.count) Songs…") {
+                pendingTracks = picked
+                playlistName = "Picked · " + Date().formatted(.dateTime.month(.abbreviated).day())
+                naming = true
+            }
+            Button("Play \(picked.count) Songs") { model.playTogether(picked); clearSelection() }
+            Button("Add \(picked.count) Songs to Queue") {
+                for t in picked { model.enqueue(t, atEnd: true) }
+                clearSelection()
+            }
+            Divider()
+            Button("Clear Selection") { clearSelection() }
+        } else {
+            Button("Play") { model.engine.play(videoId: song.videoId) }
+            Button("Play Next") { model.enqueue(song.track, atEnd: false) }
+            Button("Add to Queue") { model.enqueue(song.track, atEnd: true) }
+            Divider()
+            Button("Quick Playlist of the Last 15") { model.makeQuickPlaylist() }
+        }
+    }
+
+    private func clearSelection() {
+        selection = []
+        anchor = nil
     }
 
     // MARK: YouTube Music shelves
@@ -295,6 +429,53 @@ struct ForYouPane: View {
             }
             content()
         }
+    }
+}
+
+/// A song in Recently played, which can be picked for a playlist.
+private struct RecentCard: View {
+    let song: AppModel.RecentSong
+    let selected: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 7) {
+                ZStack(alignment: .topTrailing) {
+                    Artwork(url: song.artworkURL, corner: 11)
+                    if hovering && !selected {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 11, style: .continuous).fill(.black.opacity(0.35))
+                            Image(systemName: "play.fill").font(.system(size: 20))
+                        }
+                    }
+                    if selected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 20))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, Color.accentColor)
+                            .padding(6)
+                    }
+                }
+                .frame(width: 128, height: 128)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(Color.accentColor, lineWidth: selected ? 3 : 0)
+                }
+                .scaleEffect(selected ? 0.95 : 1)
+
+                Text(song.title).font(.callout.weight(.medium)).lineLimit(1)
+                Text("\(song.artist) · \(song.when)")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .frame(width: 128, alignment: .leading)
+        }
+        .buttonStyle(.plainHit)
+        .onHover { hovering = $0 }
+        .animation(.spring(response: 0.25, dampingFraction: 0.8), value: selected)
+        .animation(.easeOut(duration: 0.15), value: hovering)
     }
 }
 

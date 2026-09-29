@@ -1646,6 +1646,40 @@ const allScopeSearch = async (reqId, query) => {
     },
 
 
+    // Your YouTube Music history, from every device you listen on. Shelves
+    // are day buckets ("Today", "Yesterday", "This week"…), newest first.
+    // Measured before: about two weeks, one entry per song, no times and no
+    // continuation — fine for a recently played list, not for statistics.
+    history: async (reqId) => {
+      const j = await innertube('browse', { browseId: 'FEmusic_history' });
+      const sections = [];
+      const seen = new Set();
+      for (const shelf of collect(j, 'musicShelfRenderer', 20)) {
+        const tracks = [];
+        for (const row of (shelf.contents || [])) {
+          const p = parseListItem(row.musicResponsiveListItemRenderer);
+          if (p?.type === 'song' && !seen.has(p.track.videoId)) {
+            seen.add(p.track.videoId);
+            tracks.push(p.track);
+          }
+        }
+        if (tracks.length) sections.push({ title: runs(shelf.title) || '', tracks });
+      }
+      post({ kind: 'history', requestId: reqId, sections });
+    },
+
+    // A private playlist in the signed-in account, with these songs in order.
+    createPlaylist: async (reqId, title, videoIds) => {
+      let playlistId = null, error = null;
+      try {
+        const j = await innertube('playlist/create', {
+          title, description: 'Made in Prism', privacyStatus: 'PRIVATE', videoIds });
+        playlistId = j?.playlistId || null;
+        if (!playlistId) error = 'YouTube did not return a playlist';
+      } catch (e) { error = String(e && e.message || e); }
+      post({ kind: 'createPlaylist', requestId: reqId, result: { playlistId, error } });
+    },
+
     // YouTube Music's Home feed — Quick picks, your mixes, Listen again, new
     // releases — as the web app gets it for the signed-in account. Shelves are
     // carousels of either song rows (Quick picks) or two-row cards; a card

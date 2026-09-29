@@ -262,6 +262,15 @@ final class AppModel {
         prefetchNextLyrics()
         // Ready before For You is opened, so the page arrives filled.
         if home.isEmpty, snap.ready { loadHome() }
+        if youtubeHistory.isEmpty, snap.ready { loadYouTubeHistory() }
+        // A new song is a new entry in YouTube's history, a moment later.
+        if let id = snap.track?.videoId, id != historySeenFor {
+            historySeenFor = id
+            Task {
+                try? await Task.sleep(for: .seconds(20))
+                loadYouTubeHistory(force: true)
+            }
+        }
         #if canImport(AppKit)
         listenForTempo(snap)
         #endif
@@ -459,6 +468,116 @@ final class AppModel {
         }
     }
 
+    // MARK: Recently played
+
+    /// One song in Recently played.
+    struct RecentSong: Identifiable, Hashable {
+        let videoId: String
+        let title: String
+        let artist: String
+        let artworkURL: String?
+        /// "Today", "Yesterday"… from YouTube's history, or "Just now" for a
+        /// play Prism heard that YouTube has not listed yet.
+        let when: String
+        var id: String { videoId }
+        var track: Track {
+            Track(videoId: videoId, title: title, artist: artist, album: nil,
+                  durationText: nil, durationSeconds: nil, artworkURL: artworkURL)
+        }
+    }
+
+    /// YouTube Music's own history — every device, not only Prism.
+    var youtubeHistory: [Engine.HistorySection] = []
+    private var historyLoadedAt: Date?
+
+    func loadYouTubeHistory(force: Bool = false) {
+        guard engine.snapshot.ready, engine.snapshot.signedIn else { return }
+        if !force, let at = historyLoadedAt, Date().timeIntervalSince(at) < 45 { return }
+        historyLoadedAt = Date()
+        Task {
+            do {
+                let sections = try await engine.youtubeHistory()
+                evalLog("history.log", sections.map { "\($0.title): \($0.tracks.count)" }.joined(separator: " · "))
+                guard !sections.isEmpty else { return }
+                withAnimation(.smooth(duration: 0.3)) { youtubeHistory = sections }
+            } catch {
+                evalLog("history.log", "failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Newest first, one entry per song. YouTube's history covers every
+    /// device you listen on; it is led by anything Prism played in the last
+    /// half hour, in case YouTube has not caught up. Signed out, it is Prism's
+    /// own log.
+    var recentlyPlayed: [RecentSong] {
+        var out: [RecentSong] = []
+        var seen = Set<String>()
+        func add(_ id: String, _ title: String, _ artist: String, _ art: String?, _ when: String) {
+            guard seen.insert(id).inserted else { return }
+            out.append(RecentSong(videoId: id, title: title, artist: artist, artworkURL: art, when: when))
+        }
+        let local = history.recent(limit: 60)
+        for p in local where Date().timeIntervalSince(p.at) < 1800 {
+            add(p.videoId, p.title, p.artist, p.artworkURL, "Just now")
+        }
+        for section in youtubeHistory {
+            for t in section.tracks { add(t.videoId, t.title, t.artist, t.artworkURL, section.title) }
+        }
+        if youtubeHistory.isEmpty {
+            for p in local {
+                add(p.videoId, p.title, p.artist, p.artworkURL,
+                    p.at.formatted(.relative(presentation: .named)))
+            }
+        }
+        return out
+    }
+
+    /// Your last 15 songs as a playlist, in the order you heard them.
+    func makeQuickPlaylist() {
+        let songs = Array(recentlyPlayed.prefix(15).reversed())
+        let name = "Quick playlist · " + Date().formatted(.dateTime.month(.abbreviated).day().hour().minute())
+        makePlaylist(from: songs.map(\.track), named: name)
+    }
+
+    /// A private playlist in your YouTube Music account, then opens it.
+    /// Signed out there is no account to put it in, so the songs play instead.
+    func makePlaylist(from tracks: [Track], named name: String) {
+        guard !tracks.isEmpty else { flash("Nothing to put in a playlist yet"); return }
+        let title = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Prism playlist" : name
+        guard engine.snapshot.signedIn else {
+            playTogether(tracks)
+            flash("Sign in to save playlists — playing the \(tracks.count) songs instead")
+            return
+        }
+        status = "Making “\(title)”…"
+        Task {
+            do {
+                guard let id = try await engine.createPlaylist(title: title, videoIds: tracks.map(\.videoId)) else {
+                    flash("YouTube didn't make the playlist"); return
+                }
+                flash("Made “\(title)” — \(tracks.count) songs")
+                open(Shelf(browseId: "VL" + id, title: title, subtitle: "\(tracks.count) songs",
+                           artworkURL: tracks.first?.artworkURL, kind: "playlist"))
+                loadLibraryIfNeeded(force: true)
+            } catch {
+                flash("Couldn't make the playlist: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Plays these in order: the first now, the rest queued behind it.
+    func playTogether(_ tracks: [Track]) {
+        guard let first = tracks.first else { return }
+        Task {
+            engine.play(videoId: first.videoId)
+            try? await Task.sleep(for: .seconds(2.5))
+            for t in tracks.dropFirst() {
+                _ = try? await engine.enqueue(videoId: t.videoId, atEnd: true)
+            }
+        }
+    }
+
     // MARK: For You
 
     /// YouTube Music's Home shelves for this account.
@@ -467,6 +586,7 @@ final class AppModel {
     private var homeLoadedAt: Date?
 
     private var homeTriedAt: Date?
+    private var historySeenFor: String?
 
     func loadHome(force: Bool = false) {
         guard engine.snapshot.ready, !homeLoading else { return }
