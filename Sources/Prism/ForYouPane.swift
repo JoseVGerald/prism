@@ -14,13 +14,7 @@ import AppKit
 struct ForYouPane: View {
     @Bindable var model: AppModel
 
-    /// Songs picked in Recently played, and where a shift-click range starts.
-    @State private var selection: [String] = []
-    @State private var anchor: Int?
-    /// Naming a playlist made from the selection.
-    @State private var naming = false
-    @State private var playlistName = ""
-    @State private var pendingTracks: [Track] = []
+    private var selection: SongSelection { model.selection }
 
     private var history: History { model.history }
     private var monthAgo: Date { Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? .distantPast }
@@ -53,16 +47,7 @@ struct ForYouPane: View {
             model.loadSuggestions()
             model.loadYouTubeHistory()
         }
-        .alert("Name the playlist", isPresented: $naming) {
-            TextField("Name", text: $playlistName)
-            Button("Create") {
-                model.makePlaylist(from: pendingTracks, named: playlistName)
-                clearSelection()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("\(pendingTracks.count) songs, in the order you played them. Saved privately to your YouTube Music library.")
-        }
+
     }
 
     // MARK: Header and hero
@@ -190,70 +175,27 @@ struct ForYouPane: View {
                 }
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 14) {
+                        let list = songs.map(\.track)
                         ForEach(Array(songs.enumerated()), id: \.element.id) { i, song in
-                            RecentCard(song: song, selected: selection.contains(song.id)) {
-                                tap(i, in: songs)
+                            RecentCard(song: song, selected: selection.contains(song.id, in: "recent")) {
+                                // Newest first on screen; a playlist of them
+                                // plays in the order they were heard.
+                                if selection.click(i, in: list, scope: "recent", newestFirst: true) { return }
+                                model.engine.play(videoId: song.videoId)
                             }
-                            .contextMenu { menu(for: song, in: songs) }
+                            .contextMenu { menu(for: song) }
                         }
                     }
                     .padding(.horizontal, 2).padding(.vertical, 4)
                 }
-                if !selection.isEmpty {
-                    HStack(spacing: 10) {
-                        Text("\(selection.count) selected — right-click one to make a playlist")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Button("Clear") { clearSelection() }
-                            .buttonStyle(.plainHit)
-                            .font(.caption.weight(.medium))
-                    }
-                    .transition(.opacity)
-                }
             }
-            .animation(.easeOut(duration: 0.15), value: selection)
         }
-    }
-
-    private func tap(_ i: Int, in songs: [AppModel.RecentSong]) {
-        #if canImport(AppKit)
-        let mods = NSEvent.modifierFlags
-        if mods.contains(.shift) {
-            if let a = anchor, songs.indices.contains(a) {
-                selection = songs[min(a, i)...max(a, i)].map(\.id)
-            } else {
-                anchor = i
-                selection = [songs[i].id]
-            }
-            return
-        }
-        if mods.contains(.command) {
-            if let at = selection.firstIndex(of: songs[i].id) { selection.remove(at: at) }
-            else { selection.append(songs[i].id) }
-            anchor = i
-            return
-        }
-        #endif
-        clearSelection()
-        model.engine.play(videoId: songs[i].videoId)
     }
 
     @ViewBuilder
-    private func menu(for song: AppModel.RecentSong, in songs: [AppModel.RecentSong]) -> some View {
-        if selection.contains(song.id), selection.count > 1 {
-            // In the order they were played: the list is newest first.
-            let picked = songs.filter { selection.contains($0.id) }.reversed().map(\.track)
-            Button("Make a Playlist from \(picked.count) Songs…") {
-                pendingTracks = picked
-                playlistName = "Picked · " + Date().formatted(.dateTime.month(.abbreviated).day())
-                naming = true
-            }
-            Button("Play \(picked.count) Songs") { model.playTogether(picked); clearSelection() }
-            Button("Add \(picked.count) Songs to Queue") {
-                for t in picked { model.enqueue(t, atEnd: true) }
-                clearSelection()
-            }
-            Divider()
-            Button("Clear Selection") { clearSelection() }
+    private func menu(for song: AppModel.RecentSong) -> some View {
+        if selection.contains(song.id, in: "recent"), selection.count > 1 {
+            SelectionMenu(model: model)
         } else {
             Button("Play") { model.engine.play(videoId: song.videoId) }
             Button("Play Next") { model.enqueue(song.track, atEnd: false) }
@@ -263,9 +205,16 @@ struct ForYouPane: View {
         }
     }
 
-    private func clearSelection() {
-        selection = []
-        anchor = nil
+    /// A song card or row's right-click menu: the picks' menu when it is one
+    /// of several picked, its own otherwise.
+    @ViewBuilder
+    private func pickedMenu<Own: View>(_ id: String?, scope: String,
+                                       @ViewBuilder own: () -> Own) -> some View {
+        if let id, selection.contains(id, in: scope), selection.count > 1 {
+            SelectionMenu(model: model)
+        } else {
+            own()
+        }
     }
 
     // MARK: YouTube Music shelves
@@ -279,12 +228,17 @@ struct ForYouPane: View {
         section(shelf.title, subtitle: shelf.strapline ?? "Songs picked for you by YouTube Music") {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHGrid(rows: Array(repeating: GridItem(.fixed(58), spacing: 2), count: 4), spacing: 10) {
+                    let scope = "home:" + shelf.title
+                    let songs = shelf.items.compactMap(\.asTrack)
                     ForEach(shelf.items) { item in
                         QuickPickRow(item: item,
                                      isCurrent: item.videoId == model.engine.snapshot.track?.videoId) {
+                            if let i = songs.firstIndex(where: { $0.videoId == item.videoId }),
+                               selection.click(i, in: songs, scope: scope) { return }
                             model.play(item)
                         }
-                        .contextMenu { songMenu(item) }
+                        .selectedSong(item.videoId.map { selection.contains($0, in: scope) } ?? false)
+                        .contextMenu { pickedMenu(item.videoId, scope: scope) { songMenu(item) } }
                     }
                 }
                 .padding(.vertical, 2)
@@ -296,9 +250,22 @@ struct ForYouPane: View {
         section(shelf.title, subtitle: shelf.strapline) {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 16) {
+                    let scope = "home:" + shelf.title
+                    let songs = shelf.items.compactMap(\.asTrack)
                     ForEach(shelf.items) { item in
-                        HomeCard(item: item) { model.play(item) }
-                            .contextMenu { if item.videoId != nil { songMenu(item) } }
+                        HomeCard(item: item) {
+                            // Songs in a card shelf can be picked too; albums
+                            // and playlists just open.
+                            if let i = songs.firstIndex(where: { $0.videoId == item.videoId }),
+                               selection.click(i, in: songs, scope: scope) { return }
+                            model.play(item)
+                        }
+                        .selectedSong(item.videoId.map { selection.contains($0, in: scope) } ?? false, corner: 12)
+                            .contextMenu {
+                                pickedMenu(item.videoId, scope: scope) {
+                                    if item.videoId != nil { songMenu(item) }
+                                }
+                            }
                     }
                 }
                 .padding(.vertical, 6).padding(.horizontal, 2)
@@ -335,7 +302,7 @@ struct ForYouPane: View {
         let top = history.topTracks(since: monthAgo, limit: 14).filter { $0.count >= 2 }
         if top.count >= 3 {
             section("On repeat", subtitle: "Your most played this month") {
-                playCards(top.map(\.play), badges: top.map { "\($0.count) plays" })
+                playCards(top.map(\.play), badges: top.map { "\($0.count) plays" }, scope: "onrepeat")
             }
         }
     }
@@ -350,21 +317,28 @@ struct ForYouPane: View {
             .prefix(14)
         if older.count >= 3 {
             section("Rediscover", subtitle: "You played these a lot — just not lately") {
-                playCards(older.map(\.play), badges: nil)
+                playCards(older.map(\.play), badges: nil, scope: "rediscover")
             }
         }
     }
 
-    private func playCards(_ plays: [Play], badges: [String]?) -> some View {
+    private func playCards(_ plays: [Play], badges: [String]?, scope: String) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: .top, spacing: 14) {
+                let list = plays.map(\.asTrack)
                 ForEach(Array(plays.enumerated()), id: \.element.id) { i, play in
-                    PlayCard(play: play, badge: badges?[i]) { model.engine.play(videoId: play.videoId) }
-                        .contextMenu {
+                    PlayCard(play: play, badge: badges?[i]) {
+                        if selection.click(i, in: list, scope: scope) { return }
+                        model.engine.play(videoId: play.videoId)
+                    }
+                    .selectedSong(selection.contains(play.videoId, in: scope), corner: 11)
+                    .contextMenu {
+                        pickedMenu(play.videoId, scope: scope) {
                             Button("Play") { model.engine.play(videoId: play.videoId) }
                             Button("Play next") { model.enqueue(play.asTrack, atEnd: false) }
                             Button("Add to queue") { model.enqueue(play.asTrack, atEnd: true) }
                         }
+                    }
                 }
             }
             .padding(.horizontal, 2).padding(.vertical, 4)
@@ -382,8 +356,9 @@ struct ForYouPane: View {
                 .padding(.vertical, 18)
             } else {
                 VStack(spacing: 2) {
-                    ForEach(model.suggestions.prefix(6)) { track in
-                        TrackRow(model: model, track: track)
+                    let list = Array(model.suggestions.prefix(6))
+                    ForEach(Array(list.enumerated()), id: \.element.id) { i, track in
+                        TrackRow(model: model, track: track, list: list, index: i, scope: "suggestions")
                     }
                 }
             }

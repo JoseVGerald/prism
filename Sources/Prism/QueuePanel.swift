@@ -201,6 +201,8 @@ struct QueuePanel: View {
                  isCurrent: row.entry.index == snap.queueIndex,
                  slot: slot, total: count,
                  lifted: lifted,
+                 picked: model.selection.contains(row.entry.videoId, in: "queue"),
+                 pickable: rows.map { Self.track($0.entry) },
                  onRemove: { remove(row) },
                  onMove: { target in move(from: slot, to: min(max(target, 0), count - 1)) })
             .offset(y: lifted ? dragBy : shift(for: slot))
@@ -221,6 +223,11 @@ struct QueuePanel: View {
         if from < to, index > from, index <= to { return -Self.stride }
         if from > to, index >= to, index < from { return Self.stride }
         return 0
+    }
+
+    static func track(_ e: QueueEntry) -> Track {
+        Track(videoId: e.videoId, title: e.title, artist: e.artist, album: nil,
+              durationText: e.durationText, durationSeconds: nil, artworkURL: e.artworkURL)
     }
 
     private func commit(from: Int) {
@@ -247,6 +254,9 @@ private struct QueueRow: View {
     let slot: Int
     let total: Int
     var lifted = false
+    /// Picked with shift- or ⌘-click, and the queue as the list to pick from.
+    var picked = false
+    var pickable: [Track] = []
     let onRemove: () -> Void
     let onMove: (Int) -> Void
 
@@ -260,6 +270,7 @@ private struct QueueRow: View {
             // Same reasoning as TrackRow: a row-wide tap gesture would eat the
             // remove button's clicks.
             Button {
+                if model.selection.click(slot, in: pickable, scope: "queue") { return }
                 model.engine.jump(to: entry.index)
             } label: {
                 HStack(spacing: 10) {
@@ -345,7 +356,18 @@ private struct QueueRow: View {
         .animation(.easeOut(duration: 0.12), value: hovering)
         // Reordering without dragging — and the only way to reach the far end
         // of a long queue without a scroll-and-drag.
+        .selectedSong(picked, corner: 9)
         .contextMenu {
+            if picked && model.selection.count > 1 {
+                SelectionMenu(model: model)
+            } else {
+                ownMenu
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var ownMenu: some View {
             Button("Play") { model.engine.jump(to: entry.index) }
             Divider()
             Button("Move to Top") { onMove(0) }
@@ -365,6 +387,5 @@ private struct QueueRow: View {
             Button("Remove from Queue", role: .destructive) {
                 onRemove()
             }
-        }
     }
 }

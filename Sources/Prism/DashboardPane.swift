@@ -162,8 +162,11 @@ struct DashboardPane: View {
         VStack(alignment: .leading, spacing: 9) {
             Text("Most played").font(.headline)
             VStack(spacing: 7) {
-                ForEach(Array(history.topTracks(since: since).enumerated()), id: \.offset) { i, t in
+                let top = history.topTracks(since: since)
+                let list = top.map(\.play.asTrack)
+                ForEach(Array(top.enumerated()), id: \.offset) { i, t in
                     Button {
+                        if model.selection.click(i, in: list, scope: "mostplayed") { return }
                         model.engine.play(videoId: t.play.videoId)
                     } label: {
                         HStack(spacing: 10) {
@@ -183,6 +186,16 @@ struct DashboardPane: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plainHit)
+                    .selectedSong(model.selection.contains(t.play.videoId, in: "mostplayed"), corner: 8)
+                    .contextMenu {
+                        if model.selection.contains(t.play.videoId, in: "mostplayed"), model.selection.count > 1 {
+                            SelectionMenu(model: model)
+                        } else {
+                            Button("Play") { model.engine.play(videoId: t.play.videoId) }
+                            Button("Play Next") { model.enqueue(t.play.asTrack, atEnd: false) }
+                            Button("Add to Queue") { model.enqueue(t.play.asTrack, atEnd: true) }
+                        }
+                    }
                 }
             }
             .padding(14)

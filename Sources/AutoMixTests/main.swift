@@ -634,6 +634,29 @@ energies = [Double](repeating: 0.7, count: 48)
 check(DropFinder.drop(energies: energies, firstDownbeat: 0) == nil, "a song that never gets bigger has no drop")
 check(BarPhase.downbeat(accents: [1, 5, 2, 4]) == 1, "the beat with the most kick is the one")
 
+// MARK: - Picks
+
+suite("Picks")
+
+let songsList = ["a", "b", "c", "d", "e", "f"]
+var picks = Picks()
+check(!picks.click(2, in: songsList, scope: "album", shift: false, command: false),
+      "a plain click is not a pick — the row plays")
+check(picks.click(1, in: songsList, scope: "album", shift: true, command: false) && picks.ids == ["b"],
+      "the first shift-click picks that song and marks where a range starts")
+_ = picks.click(4, in: songsList, scope: "album", shift: true, command: false)
+check(picks.ids == ["b", "c", "d", "e"], "a second shift-click picks everything between")
+_ = picks.click(0, in: songsList, scope: "album", shift: true, command: false)
+check(picks.ids == ["a", "b"], "shift-clicking the other way re-draws the range from the same start")
+_ = picks.click(5, in: songsList, scope: "album", shift: false, command: true)
+check(picks.ids == ["a", "b", "f"], "⌘-click adds one, in list order")
+_ = picks.click(0, in: songsList, scope: "album", shift: false, command: true)
+check(picks.ids == ["b", "f"], "⌘-click on a picked song takes it away")
+_ = picks.click(3, in: ["x", "y", "z", "w"], scope: "search", shift: true, command: false)
+check(picks.scope == "search" && picks.ids == ["w"], "picking in another list starts over")
+check(!picks.click(1, in: songsList, scope: "search", shift: false, command: false) && picks.isEmpty,
+      "a plain click lets the picks go")
+
 // MARK: - Result
 
 print("\n\(checks - failures.count)/\(checks) passed")

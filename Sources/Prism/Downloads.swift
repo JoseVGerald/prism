@@ -24,6 +24,11 @@ struct DownloadRecord: Codable, Identifiable, Hashable {
     var note: String?
 
     var id: String { videoId }
+
+    var track: Track {
+        Track(videoId: videoId, title: title, artist: artist, album: nil,
+              durationText: nil, durationSeconds: nil, artworkURL: artworkURL)
+    }
 }
 
 /// Every download asked for from Prism, newest first, kept on this Mac.
@@ -91,7 +96,10 @@ struct DownloadsPane: View {
                     empty
                 } else {
                     LazyVStack(spacing: 4) {
-                        ForEach(records) { DownloadRow(model: model, record: $0) }
+                        let list = records.map(\.track)
+                        ForEach(Array(records.enumerated()), id: \.element.id) { i, r in
+                            DownloadRow(model: model, record: r, list: list, index: i)
+                        }
                     }
                 }
             }
@@ -140,11 +148,16 @@ struct DownloadsPane: View {
 private struct DownloadRow: View {
     @Bindable var model: AppModel
     let record: DownloadRecord
+    var list: [Track] = []
+    var index = 0
     @State private var hovering = false
+
+    private var picked: Bool { model.selection.contains(record.videoId, in: "downloads") }
 
     var body: some View {
         HStack(spacing: 12) {
             Button {
+                if model.selection.click(index, in: list, scope: "downloads") { return }
                 model.engine.play(videoId: record.videoId)
             } label: {
                 HStack(spacing: 12) {
@@ -187,6 +200,8 @@ private struct DownloadRow: View {
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
             .fill(.white.opacity(hovering ? 0.07 : 0)))
         .onHover { hovering = $0 }
+        .selectedSong(picked)
+        .contextMenu { if picked && model.selection.count > 1 { SelectionMenu(model: model) } }
         .help(record.note ?? "")
     }
 

@@ -30,6 +30,8 @@ final class AppModel {
     let scrobbler = Scrobbler()
     let downloads = DownloadLog()
     let tempoMemory = TempoMemory()
+    /// Songs picked with shift- and ⌘-click, in whichever list.
+    let selection = SongSelection()
 
     /// Progress and outcome of a Takeout import, for the dashboard to show.
     var importStatus: String?
@@ -1124,6 +1126,22 @@ final class AppModel {
             flash(engine.snapshot.queue.count < before
                   ? "Removed \(entry.title)"
                   : "Couldn't remove \(entry.title).")
+        }
+    }
+
+    /// Removes every queued copy of these songs except the one playing,
+    /// last first, so no removal shifts the rows still to go.
+    func removeFromQueue(videoIds: Set<String>) {
+        let snap = engine.snapshot
+        let rows = snap.queue.filter { videoIds.contains($0.videoId) && $0.index != snap.queueIndex }
+            .sorted { $0.index > $1.index }
+        guard !rows.isEmpty else { return }
+        let before = snap.queue.count
+        for row in rows { engine.removeFromQueue(at: row.index) }
+        Task {
+            try? await Task.sleep(for: .milliseconds(450))
+            let gone = before - engine.snapshot.queue.count
+            flash(gone > 0 ? "Removed \(gone) songs from the queue" : "Couldn't remove those songs.")
         }
     }
 

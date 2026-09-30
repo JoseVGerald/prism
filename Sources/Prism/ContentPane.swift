@@ -17,6 +17,9 @@ struct ContentPane: View {
         // Glass off in video mode: the sidebar and queue stay frosted, this
         // pane goes clear, and the picture reads sharply through the middle.
         .modifier(PaneGlass(enabled: !model.videoMode))
+        // Shift-/⌘-click picking works in every list; its bar and naming
+        // prompt live here, once.
+        .modifier(SelectionHost(model: model))
     }
 
     @ViewBuilder
@@ -300,8 +303,9 @@ private struct SearchPane: View {
                         // without pushing anything out of reach.
                         if !results.songs.isEmpty {
                             SectionHeader("Songs")
-                            ForEach(results.songs.prefix(6)) { song in
-                                TrackRow(model: model, track: song)
+                            ForEach(Array(results.songs.prefix(6).enumerated()), id: \.element.id) { i, song in
+                                TrackRow(model: model, track: song,
+                                         list: results.songs, index: i, scope: "search")
                             }
                         }
                         shelfRow("Albums", results.albums)
@@ -310,8 +314,9 @@ private struct SearchPane: View {
 
                         if results.songs.count > 6 {
                             SectionHeader("More songs")
-                            ForEach(results.songs.dropFirst(6)) { song in
-                                TrackRow(model: model, track: song)
+                            ForEach(Array(results.songs.dropFirst(6).enumerated()), id: \.element.id) { i, song in
+                                TrackRow(model: model, track: song,
+                                         list: results.songs, index: i + 6, scope: "search")
                             }
                         }
                     }
@@ -457,7 +462,8 @@ private struct DetailPane: View {
                             VStack(spacing: 0) {
                                 ForEach(Array(detail.tracks.enumerated()), id: \.element.id) { i, t in
                                     TrackRow(model: model, track: t,
-                                             ordinal: detail.kind == "artist" ? nil : i + 1)
+                                             ordinal: detail.kind == "artist" ? nil : i + 1,
+                                             list: detail.tracks, index: i, scope: "detail")
                                 }
                             }
                         }
@@ -569,6 +575,14 @@ struct TrackRow: View {
     @Bindable var model: AppModel
     let track: Track
     var ordinal: Int? = nil
+    /// The list this row is part of, its place in it, and a name for the list
+    /// — what lets shift- and ⌘-click pick a range of songs. No scope, no
+    /// picking (a lone top result, say).
+    var list: [Track] = []
+    var index: Int = 0
+    var scope: String? = nil
+
+    private var picked: Bool { scope.map { model.selection.contains(track.videoId, in: $0) } ?? false }
 
     @State private var hovering = false
 
@@ -580,6 +594,7 @@ struct TrackRow: View {
             // the whole row — a row-wide tap gesture swallows clicks aimed at
             // the hover actions sitting inside it.
             Button {
+                if let scope, model.selection.click(index, in: list, scope: scope) { return }
                 // Radio by default, so a track picked out of search leads
                 // somewhere instead of stopping dead after one song.
                 model.engine.play(videoId: track.videoId)
@@ -659,7 +674,18 @@ struct TrackRow: View {
         }
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.13), value: hovering)
+        .selectedSong(picked)
         .contextMenu {
+            if picked && model.selection.count > 1 {
+                SelectionMenu(model: model)
+            } else {
+                rowMenu
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var rowMenu: some View {
             Button("Play radio from here") { model.engine.play(videoId: track.videoId) }
             // The escape hatch from the radio default: play exactly this and
             // nothing after it.
@@ -671,7 +697,6 @@ struct TrackRow: View {
             Button("Add to queue") { model.enqueue(track, atEnd: true) }
             Divider()
             Button("Download") { model.download(track) }
-        }
     }
 }
 

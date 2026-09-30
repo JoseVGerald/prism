@@ -26,6 +26,14 @@ struct HomeItem: Codable, Identifiable, Hashable {
 
     var id: String { videoId ?? browseId ?? playlistId ?? title }
 
+    /// The song, for anything that plays or queues songs; nil for an album,
+    /// playlist, artist or mix.
+    var asTrack: Track? {
+        guard let videoId, kind == .song || kind == .video else { return nil }
+        return Track(videoId: videoId, title: title, artist: subtitle ?? "", album: nil,
+                     durationText: nil, durationSeconds: nil, artworkURL: artworkURL)
+    }
+
     var asShelf: Shelf? {
         browseId.map { Shelf(browseId: $0, title: title, subtitle: subtitle,
                              artworkURL: artworkURL, kind: kind.rawValue) }
