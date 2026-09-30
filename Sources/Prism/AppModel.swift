@@ -182,6 +182,7 @@ final class AppModel {
         }
         // Anything stranded by a dropped connection or a quit goes out now.
         Task { await scrobbler.flushPending() }
+        startCommandChannel()
 
         // Import without the open panel, so the parser can be exercised against
         // a real export from a script. Same spirit as `PRISM_EVAL`.
@@ -265,6 +266,8 @@ final class AppModel {
         // Ready before For You is opened, so the page arrives filled.
         if home.isEmpty, snap.ready { loadHome() }
         if youtubeHistory.isEmpty, snap.ready { loadYouTubeHistory() }
+        // For the Add to Playlist menus, which have to be ready when opened.
+        if myPlaylists.isEmpty, snap.ready { loadMyPlaylists() }
         // A new song is a new entry in YouTube's history, a moment later.
         if let id = snap.track?.videoId, id != historySeenFor {
             historySeenFor = id
@@ -535,6 +538,50 @@ final class AppModel {
         return out
     }
 
+    // MARK: Your playlists
+
+    /// Playlists you can add songs to: yours, from the library. Liked Music
+    /// is left out — it fills itself from likes.
+    var myPlaylists: [MyPlaylist] = []
+    private var playlistsLoadedAt: Date?
+
+    func loadMyPlaylists(force: Bool = false) {
+        guard engine.snapshot.ready, engine.snapshot.signedIn else { return }
+        if !force, let at = playlistsLoadedAt, Date().timeIntervalSince(at) < 120 { return }
+        playlistsLoadedAt = Date()
+        Task {
+            do {
+                myPlaylists = try await engine.myPlaylists()
+                evalLog("app.log", "playlists: " + myPlaylists.map(\.title).joined(separator: ", "))
+            } catch {
+                evalLog("app.log", "playlists failed: \(error)")
+            }
+        }
+    }
+
+    /// Adds songs to one of your playlists, skipping any it already has.
+    func add(_ tracks: [Track], to playlist: MyPlaylist) {
+        guard !tracks.isEmpty else { return }
+        status = "Adding to “\(playlist.title)”…"
+        Task {
+            do {
+                let r = try await engine.addToPlaylist(playlist.playlistId, videoIds: tracks.map(\.videoId))
+                evalLog("app.log", "addToPlaylist \(playlist.title): added \(r.added), skipped \(r.skipped)")
+                if r.added == 0 {
+                    flash(tracks.count == 1 ? "“\(tracks[0].title)” is already in “\(playlist.title)”"
+                                            : "Those are all already in “\(playlist.title)”")
+                } else {
+                    let what = r.added == 1 ? "1 song" : "\(r.added) songs"
+                    flash("Added \(what) to “\(playlist.title)”"
+                          + (r.skipped > 0 ? " — \(r.skipped) already there" : ""))
+                }
+            } catch {
+                evalLog("app.log", "addToPlaylist threw \(error)")
+                flash("Couldn't add to “\(playlist.title)”: \(error.localizedDescription)")
+            }
+        }
+    }
+
     /// Your last 15 songs as a playlist, in the order you heard them.
     func makeQuickPlaylist() {
         let songs = Array(recentlyPlayed.prefix(15).reversed())
@@ -553,16 +600,21 @@ final class AppModel {
             return
         }
         status = "Making “\(title)”…"
+        evalLog("app.log", "making playlist “\(title)” with \(tracks.count) songs")
         Task {
             do {
-                guard let id = try await engine.createPlaylist(title: title, videoIds: tracks.map(\.videoId)) else {
+                let id = try await engine.createPlaylist(title: title, videoIds: tracks.map(\.videoId))
+                evalLog("app.log", "createPlaylist answered \(id ?? "nil")")
+                guard let id else {
                     flash("YouTube didn't make the playlist"); return
                 }
                 flash("Made “\(title)” — \(tracks.count) songs")
+                loadMyPlaylists(force: true)
                 open(Shelf(browseId: "VL" + id, title: title, subtitle: "\(tracks.count) songs",
                            artworkURL: tracks.first?.artworkURL, kind: "playlist"))
                 loadLibraryIfNeeded(force: true)
             } catch {
+                evalLog("app.log", "createPlaylist threw \(error)")
                 flash("Couldn't make the playlist: \(error.localizedDescription)")
             }
         }
@@ -607,6 +659,39 @@ final class AppModel {
                     .joined(separator: " · "))
             } catch {
                 evalLog("home.log", "failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Actions a script can ask for under PRISM_EVAL, one per line in
+    /// `~/.prism-eval/app.cmd` — the Swift-side twin of the page console, for
+    /// testing what only a click would otherwise reach.
+    private func startCommandChannel() {
+        guard ProcessInfo.processInfo.environment["PRISM_EVAL"] == "1" else { return }
+        let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".prism-eval/app.cmd")
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                try? FileManager.default.removeItem(at: url)
+                for line in text.split(separator: "\n") {
+                    let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
+                    self.evalLog("app.log", "command: \(line)")
+                    switch parts.first {
+                    case "quickPlaylist": self.makeQuickPlaylist()
+                    case "loadPlaylists": self.loadMyPlaylists(force: true)
+                    case "addTo":
+                        // addTo <playlistId> <videoId>
+                        let args = parts.count > 1 ? parts[1].split(separator: " ").map(String.init) : []
+                        if args.count == 2 {
+                            self.add([Track(videoId: args[1], title: args[1], artist: "", album: nil,
+                                            durationText: nil, durationSeconds: nil, artworkURL: nil)],
+                                     to: MyPlaylist(playlistId: args[0], title: args[0]))
+                        }
+                    case "route": if parts.count > 1, parts[1] == "downloads" { self.route = .downloads }
+                    default: self.evalLog("app.log", "unknown command")
+                    }
+                }
             }
         }
     }
@@ -1312,6 +1397,7 @@ final class AppModel {
 
     func flash(_ message: String) {
         status = message
+        evalLog("status.log", message)
         Task {
             try? await Task.sleep(for: .seconds(2.5))
             if status == message { status = nil }

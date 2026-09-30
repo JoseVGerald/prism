@@ -200,6 +200,7 @@ struct ForYouPane: View {
             Button("Play") { model.engine.play(videoId: song.videoId) }
             Button("Play Next") { model.enqueue(song.track, atEnd: false) }
             Button("Add to Queue") { model.enqueue(song.track, atEnd: true) }
+            AddToPlaylistMenu(model: model) { [song.track] }
             Divider()
             Button("Quick Playlist of the Last 15") { model.makeQuickPlaylist() }
         }
@@ -282,6 +283,7 @@ struct ForYouPane: View {
             Button("Play") { model.engine.play(videoId: id) }
             Button("Play next") { model.enqueue(track, atEnd: false) }
             Button("Add to queue") { model.enqueue(track, atEnd: true) }
+            AddToPlaylistMenu(model: model) { [track] }
             Button("Download") { model.download(track) }
         }
     }
@@ -337,6 +339,7 @@ struct ForYouPane: View {
                             Button("Play") { model.engine.play(videoId: play.videoId) }
                             Button("Play next") { model.enqueue(play.asTrack, atEnd: false) }
                             Button("Add to queue") { model.enqueue(play.asTrack, atEnd: true) }
+                            AddToPlaylistMenu(model: model) { [play.asTrack] }
                         }
                     }
                 }

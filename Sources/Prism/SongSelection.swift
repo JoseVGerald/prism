@@ -31,9 +31,11 @@ final class SongSelection {
     /// playlist, so it plays in the order the songs were heard.
     private(set) var newestFirst = false
 
-    /// The playlist-naming prompt.
+    /// The playlist-naming prompt, and the songs it is for when they are
+    /// not the picks (a single song's "New Playlist…").
     var naming = false
     var name = ""
+    @ObservationIgnored var namingFor: [Track]?
 
     var scope: String? { picks.scope }
     var isEmpty: Bool { picks.isEmpty }
@@ -69,11 +71,15 @@ final class SongSelection {
         newestFirst = false
     }
 
-    func askForName() {
-        name = (scope == "recent" ? "Picked · " : "Mix · ")
-            + Date().formatted(.dateTime.month(.abbreviated).day())
+    func askForName(for songs: [Track]? = nil) {
+        namingFor = songs
+        name = songs?.count == 1 ? songs![0].title
+            : (scope == "recent" ? "Picked · " : "Mix · ") + Date().formatted(.dateTime.month(.abbreviated).day())
         naming = true
     }
+
+    /// The songs a new playlist from the prompt should hold.
+    var namingSongs: [Track] { namingFor ?? ordered }
 
     #if canImport(AppKit)
     @ObservationIgnored private var escape: Any?
@@ -102,6 +108,7 @@ struct SelectionMenu: View {
     var body: some View {
         let n = model.selection.count
         Button("Make a Playlist from \(n) Songs…") { model.selection.askForName() }
+        AddToPlaylistMenu(model: model) { model.selection.ordered }
         Button("Play \(n) Songs") {
             model.playTogether(model.selection.ordered)
             model.selection.clear()
@@ -154,6 +161,15 @@ struct SelectionBar: View {
                 .contentTransition(.numericText())
             Divider().frame(height: 16)
             action("Make playlist", "text.badge.plus") { model.selection.askForName() }
+            Menu {
+                AddToPlaylistMenu(model: model, inline: true) { model.selection.ordered }
+            } label: {
+                Label("Add to playlist", systemImage: "music.note.list").font(.callout.weight(.medium))
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plainHit)
+            .menuIndicator(.hidden)
+            .fixedSize()
             action("Play", "play.fill") {
                 model.playTogether(model.selection.ordered)
                 model.selection.clear()
@@ -202,13 +218,42 @@ struct SelectionHost: ViewModifier {
             .alert("Name the playlist", isPresented: $selection.naming) {
                 TextField("Name", text: $selection.name)
                 Button("Create") {
-                    model.makePlaylist(from: model.selection.ordered, named: model.selection.name)
-                    model.selection.clear()
+                    model.makePlaylist(from: model.selection.namingSongs, named: model.selection.name)
+                    if model.selection.namingFor == nil { model.selection.clear() }
+                    model.selection.namingFor = nil
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("\(model.selection.count) songs, saved privately to your YouTube Music library.")
+                let n = model.selection.namingSongs.count
+                Text("\(n == 1 ? "1 song" : "\(n) songs"), saved privately to your YouTube Music library.")
             }
             .onChange(of: model.route) { _, _ in model.selection.clear() }
+    }
+}
+
+/// "Add to Playlist": your playlists, newest first as YouTube lists them,
+/// and a new one. `tracks` is read when a playlist is chosen, so the menu
+/// always adds what is picked at that moment.
+struct AddToPlaylistMenu: View {
+    @Bindable var model: AppModel
+    /// Items straight in the enclosing menu rather than in a submenu.
+    var inline = false
+    let tracks: () -> [Track]
+
+    var body: some View {
+        if inline { items } else { Menu("Add to Playlist") { items } }
+    }
+
+    @ViewBuilder
+    private var items: some View {
+        Button("New Playlist…") { model.selection.askForName(for: tracks()) }
+        if !model.myPlaylists.isEmpty {
+            Divider()
+            ForEach(model.myPlaylists) { p in
+                Button(p.title) { model.add(tracks(), to: p) }
+            }
+        } else if !model.engine.snapshot.signedIn {
+            Text("Sign in to see your playlists")
+        }
     }
 }

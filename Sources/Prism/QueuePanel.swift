@@ -380,6 +380,7 @@ private struct QueueRow: View {
                 .disabled(slot >= total - 1)
             Divider()
             Divider()
+            AddToPlaylistMenu(model: model) { [QueuePanel.track(entry)] }
             Button("Download for Offline") {
                 model.download(videoId: entry.videoId, title: entry.title,
                                        artist: entry.artist, artworkURL: entry.artworkURL)

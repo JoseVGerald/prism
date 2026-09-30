@@ -186,6 +186,7 @@ private struct DownloadRow: View {
                                        artist: record.artist, artworkURL: record.artworkURL)
                     }
                 }
+                AddToPlaylistMenu(model: model) { [record.track] }
                 Button("Remove from this list") { model.downloads.forget(record.videoId) }
             } label: {
                 Image(systemName: "ellipsis").frame(width: 28, height: 28)

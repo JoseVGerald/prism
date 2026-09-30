@@ -194,6 +194,7 @@ struct DashboardPane: View {
                             Button("Play") { model.engine.play(videoId: t.play.videoId) }
                             Button("Play Next") { model.enqueue(t.play.asTrack, atEnd: false) }
                             Button("Add to Queue") { model.enqueue(t.play.asTrack, atEnd: true) }
+                            AddToPlaylistMenu(model: model) { [t.play.asTrack] }
                         }
                     }
                 }

@@ -282,3 +282,14 @@ enum BridgeMessage {
     case playlist(requestId: String, detail: PlaylistDetail)
     case error(requestId: String?, message: String)
 }
+
+/// One of your playlists — somewhere songs can be added.
+struct MyPlaylist: Codable, Identifiable, Hashable {
+    /// Without the "VL" a page's browseId carries.
+    var playlistId: String
+    var title: String
+    var subtitle: String?
+    var artworkURL: String?
+
+    var id: String { playlistId }
+}

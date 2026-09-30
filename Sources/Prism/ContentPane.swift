@@ -695,6 +695,7 @@ struct TrackRow: View {
             Divider()
             Button("Play next") { model.enqueue(track, atEnd: false) }
             Button("Add to queue") { model.enqueue(track, atEnd: true) }
+            AddToPlaylistMenu(model: model) { [track] }
             Divider()
             Button("Download") { model.download(track) }
     }

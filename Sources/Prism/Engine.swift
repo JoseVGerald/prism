@@ -491,6 +491,20 @@ final class Engine: NSObject {
         return try await query("history", [], as: Wrapper.self).sections
     }
 
+    func myPlaylists() async throws -> [MyPlaylist] {
+        struct Wrapper: Decodable { let playlists: [MyPlaylist] }
+        return try await query("myPlaylists", [], as: Wrapper.self).playlists
+    }
+
+    /// How many went in, and how many were already there.
+    func addToPlaylist(_ playlistId: String, videoIds: [String]) async throws -> (added: Int, skipped: Int) {
+        struct Result: Decodable { let ok: Bool; let error: String?; let added: Int; let skipped: Int }
+        struct Wrapper: Decodable { let result: Result }
+        let r = try await query("addToPlaylist", [playlistId, videoIds], as: Wrapper.self).result
+        if let e = r.error { throw EngineError.bridge(e) }
+        return (r.added, r.skipped)
+    }
+
     /// Makes a private playlist in the signed-in account. Returns its id.
     func createPlaylist(title: String, videoIds: [String]) async throws -> String? {
         struct Result: Decodable { let playlistId: String?; let error: String? }
@@ -548,7 +562,7 @@ extension Engine: WKScriptMessageHandler {
         case "queueChange":
             logQueueChange(data)
         case "search", "library", "playlist", "enqueue", "download", "lyrics", "home",
-             "history", "createPlaylist",
+             "history", "createPlaylist", "myPlaylists", "addToPlaylist",
              "audioQuality", "streamQuality":
             if let id = envelope.requestId {
                 pending.removeValue(forKey: id)?(.success(data))

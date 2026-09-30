@@ -1668,6 +1668,50 @@ const allScopeSearch = async (reqId, query) => {
       post({ kind: 'history', requestId: reqId, sections });
     },
 
+    // Your playlists from the library — the ones songs can be added to.
+    // Liked Music (VLLM) is left out: it fills itself from likes.
+    myPlaylists: async (reqId) => {
+      const j = await innertube('browse', { browseId: 'FEmusic_liked_playlists' });
+      const playlists = [];
+      const seen = new Set();
+      for (const r of collect(j, 'musicTwoRowItemRenderer', 300)) {
+        const b = r?.navigationEndpoint?.browseEndpoint?.browseId || '';
+        if (!b.startsWith('VL') || b === 'VLLM' || seen.has(b)) continue;
+        seen.add(b);
+        playlists.push({ playlistId: b.slice(2), title: runs(r.title) || 'Untitled',
+                         subtitle: runs(r.subtitle) || null,
+                         artworkURL: bestThumb(r?.thumbnailRenderer?.musicThumbnailRenderer?.thumbnail, 120) });
+      }
+      post({ kind: 'myPlaylists', requestId: reqId, playlists });
+    },
+
+    // Adds songs to a playlist, skipping any it already holds. The skipping
+    // is done here: YouTube's own DEDUPE_OPTION_SKIP is accepted and ignored
+    // (measured — a song already in the playlist went in a second time). The
+    // check reads the playlist's first page, which covers all but very long
+    // playlists.
+    addToPlaylist: async (reqId, playlistId, videoIds) => {
+      let ok = false, error = null, added = 0, skipped = 0;
+      try {
+        const page = await innertube('browse', { browseId: 'VL' + playlistId });
+        const have = new Set(collect(page, 'musicResponsiveListItemRenderer', 500)
+          .map(r => r?.playlistItemData?.videoId).filter(Boolean));
+        const fresh = [...new Set(videoIds)].filter(v => !have.has(v));
+        skipped = videoIds.length - fresh.length;
+        if (!fresh.length) {
+          ok = true;
+        } else {
+          const j = await innertube('browse/edit_playlist', {
+            playlistId,
+            actions: fresh.map(v => ({ action: 'ACTION_ADD_VIDEO', addedVideoId: v })) });
+          ok = j?.status === 'STATUS_SUCCEEDED';
+          if (ok) added = fresh.length;
+          else error = 'YouTube answered ' + (j?.status || 'without a status');
+        }
+      } catch (e) { error = String(e && e.message || e); }
+      post({ kind: 'addToPlaylist', requestId: reqId, result: { ok, error, added, skipped } });
+    },
+
     // A private playlist in the signed-in account, with these songs in order.
     createPlaylist: async (reqId, title, videoIds) => {
       let playlistId = null, error = null;
