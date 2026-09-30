@@ -21,7 +21,7 @@ struct OutputPicker: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: icon).font(.system(size: 12)).frame(width: 15)
-                Text(audio.current?.name ?? "Output")
+                Text(audio.playingName)
                     .font(.caption).lineLimit(1)
                 Spacer(minLength: 2)
                 Image(systemName: "chevron.up.chevron.down")
@@ -36,6 +36,8 @@ struct OutputPicker: View {
         .popover(isPresented: $open, arrowEdge: .trailing) {
             VStack(alignment: .leading, spacing: 1) {
                 ForEach(audio.devices) { device in
+                    let on = audio.playing.contains { $0.id == device.id }
+                    HStack(spacing: 0) {
                     Button {
                         model.selectOutput(device)
                         open = false
@@ -48,23 +50,33 @@ struct OutputPicker: View {
                                 Text(device.transport).font(.caption2).foregroundStyle(.secondary)
                             }
                             Spacer(minLength: 12)
-                            if device.id == audio.currentId {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(Color.accentColor)
-                            }
                         }
                         .padding(.horizontal, 10).padding(.vertical, 7)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plainHit)
+                    .help("Play only here")
+
+                    // Tick more than one to play on all of them at once.
+                    Button {
+                        model.toggleOutput(device)
+                    } label: {
+                        Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 15))
+                            .foregroundStyle(on ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(.plainHit)
+                    .help(on ? (audio.playing.count > 1 ? "Stop playing here" : "Playing here")
+                             : "Also play here")
+                    }
                 }
                 if audio.devices.isEmpty {
                     Text("No outputs found").font(.callout)
                         .foregroundStyle(.secondary).padding(12)
                 }
                 Divider().padding(.vertical, 4)
-                Text("Paired speakers appear here once macOS connects them.")
+                Text("Click a name to play only there. Tick more than one to play on all of them at once — two pairs of headphones, or headphones and a speaker. Bluetooth plays a little behind wired speakers, so in the same room those can echo. Paired devices appear once macOS connects them.")
                     .font(.caption2).foregroundStyle(.secondary)
                     .padding(.horizontal, 10).padding(.bottom, 8)
                     .frame(maxWidth: 230, alignment: .leading)

@@ -26,18 +26,135 @@ final class AudioOutput {
     init() {
         refresh()
         installListener()
+        // Never leave the Mac pointed at a device that goes away with Prism.
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("NSApplicationWillTerminateNotification"),
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.leaveSeveral() }
+        }
     }
 
     var current: OutputDevice? { devices.first { $0.id == currentId } }
 
+    /// The outputs playing now: one, or several joined by Prism.
+    private(set) var playing: [OutputDevice] = []
+    /// Prism's own multi-output device while several are playing.
+    private var joined: AudioDeviceID?
+    static let joinedUID = "com.gerald.prism.several-outputs"
+
+    /// A name for what is playing: "AirPods + MacBook Air Speakers".
+    var playingName: String {
+        playing.count > 1 ? playing.map(\.name).joined(separator: " + ") : (current?.name ?? "Output")
+    }
+
     func refresh() {
-        devices = Self.outputDevices()
+        // Prism's own joined device is shown as its parts, never as itself.
+        devices = Self.outputDevices().filter { Self.uid($0.id) != Self.joinedUID }
         currentId = Self.defaultOutput() ?? 0
+        if joined == nil || currentId != joined {
+            playing = current.map { [$0] } ?? []
+        }
+    }
+
+    /// Plays on every one of `devices` at once.
+    ///
+    /// A stacked aggregate — what Audio MIDI Setup calls a Multi-Output
+    /// Device — made here and set as the system output, so everything goes to
+    /// all of them. The clock is taken from a wired or built-in output where
+    /// there is one, and the rest are drift-corrected to it, since two
+    /// Bluetooth clocks left alone slide apart over a song. What drift
+    /// correction cannot fix is latency: Bluetooth runs a few hundred
+    /// milliseconds behind a wired speaker, so two outputs in one room echo;
+    /// two pairs of headphones do not.
+    @discardableResult
+    func playOnSeveral(_ chosen: [OutputDevice]) -> Bool {
+        guard chosen.count > 1 else {
+            if let one = chosen.first { return select(one) }
+            return false
+        }
+        let ordered = chosen.sorted { ($0.isBluetooth ? 1 : 0) < ($1.isBluetooth ? 1 : 0) }
+        let uids = ordered.compactMap { Self.uid($0.id) }
+        guard uids.count == ordered.count else { return false }
+        tearDownJoined()
+
+        let subs: [[String: Any]] = uids.enumerated().map { i, uid in
+            [kAudioSubDeviceUIDKey: uid, kAudioSubDeviceDriftCompensationKey: i == 0 ? 0 : 1]
+        }
+        let description: [String: Any] = [
+            kAudioAggregateDeviceNameKey: "Prism — " + ordered.map(\.name).joined(separator: " + "),
+            kAudioAggregateDeviceUIDKey: Self.joinedUID,
+            kAudioAggregateDeviceSubDeviceListKey: subs,
+            kAudioAggregateDeviceMainSubDeviceKey: uids[0],
+            kAudioAggregateDeviceIsStackedKey: 1,
+            kAudioAggregateDeviceIsPrivateKey: 0,
+        ]
+        var id = AudioDeviceID(0)
+        guard AudioHardwareCreateAggregateDevice(description as CFDictionary, &id) == noErr, id != 0
+        else { return false }
+        joined = id
+        guard setDefault(id) else { tearDownJoined(); return false }
+        currentId = id
+        playing = ordered
+        return true
+    }
+
+    /// Back to one output: the first of the joined ones that still exists.
+    func leaveSeveral() {
+        guard joined != nil else { return }
+        let back = playing.first { d in devices.contains { $0.id == d.id } }
+        if let back { _ = setDefault(back.id) }
+        tearDownJoined()
+        refresh()
+    }
+
+    private func tearDownJoined() {
+        if let id = joined { AudioHardwareDestroyAggregateDevice(id) }
+        joined = nil
+        // One left behind by a run that ended without tidying up.
+        if let stale = Self.devices(withUID: Self.joinedUID) {
+            AudioHardwareDestroyAggregateDevice(stale)
+        }
+    }
+
+    private func setDefault(_ id: AudioDeviceID) -> Bool {
+        var id = id
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        return AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil,
+            UInt32(MemoryLayout<AudioDeviceID>.size), &id) == noErr
+    }
+
+    private static func uid(_ id: AudioDeviceID) -> String? {
+        stringProperty(id, kAudioDevicePropertyDeviceUID)
+    }
+
+    private static func devices(withUID uid: String) -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr
+        else { return nil }
+        var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &ids) == noErr
+        else { return nil }
+        return ids.first { Self.uid($0) == uid }
     }
 
     /// Moves system audio to `device`. Returns false if CoreAudio refused.
     @discardableResult
     func select(_ device: OutputDevice) -> Bool {
+        if joined != nil {
+            _ = setDefault(device.id)
+            tearDownJoined()
+            refresh()
+            return currentId == device.id
+        }
         var id = device.id
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
@@ -46,7 +163,7 @@ final class AudioOutput {
         let status = AudioObjectSetPropertyData(
             AudioObjectID(kAudioObjectSystemObject), &address, 0, nil,
             UInt32(MemoryLayout<AudioDeviceID>.size), &id)
-        if status == noErr { currentId = device.id }
+        if status == noErr { currentId = device.id; playing = [device] }
         return status == noErr
     }
 

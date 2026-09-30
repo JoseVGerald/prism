@@ -756,6 +756,27 @@ final class AppModel {
         if audio.select(device) { flash("Playing through \(device.name)") }
         else { flash("Couldn't switch to \(device.name).") }
     }
+
+    /// Adds `device` to what is playing, or takes it away — several outputs
+    /// at once when more than one is ticked.
+    func toggleOutput(_ device: OutputDevice) {
+        var chosen = audio.playing
+        if let i = chosen.firstIndex(where: { $0.id == device.id }) {
+            guard chosen.count > 1 else { return }       // always at least one
+            chosen.remove(at: i)
+        } else {
+            chosen.append(device)
+        }
+        if chosen.count == 1 {
+            selectOutput(chosen[0])
+        } else if audio.playOnSeveral(chosen) {
+            let bt = chosen.filter(\.isBluetooth).count
+            flash("Playing on \(chosen.count) outputs"
+                  + (bt > 0 && bt < chosen.count ? " — Bluetooth runs a little behind wired speakers" : ""))
+        } else {
+            flash("macOS wouldn't play on those together.")
+        }
+    }
     #endif
 
     // Search
