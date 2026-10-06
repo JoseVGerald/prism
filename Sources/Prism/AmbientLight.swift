@@ -84,6 +84,10 @@ struct AmbientLight: View {
     /// The looked-up tempo, seconds per beat, whatever the motion setting: the
     /// flowing line's pace when the audio itself is not being heard.
     var tempo: Double? = nil
+    /// Somewhere the line must not run: the window's buttons. The light
+    /// fades out before it and back in after, rather than passing behind
+    /// them — it was clipping the buttons' edge.
+    var cutout: CGRect? = nil
 
     var body: some View {
         ZStack {
@@ -103,7 +107,25 @@ struct AmbientLight: View {
                          tempo: tempo, audio: audio)
             }
         }
+        .mask { cutoutMask }
         .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private var cutoutMask: some View {
+        if let c = cutout {
+            Rectangle()
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .frame(width: c.width + 30, height: c.height + 22)
+                        .position(x: c.midX, y: c.midY)
+                        .blur(radius: 7)
+                        .blendMode(.destinationOut)
+                }
+                .compositingGroup()
+        } else {
+            Rectangle()
+        }
     }
 
     /// Nothing playing keeps the line and drops the colour: a slow colourless

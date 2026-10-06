@@ -61,7 +61,8 @@ struct RootView: View {
                                  pulse: model.ambient.pulse,
                                  audio: rimHearsMusic ? model.audioSource : nil,
                                  flow: model.ambient.flow,
-                                 tempo: model.trackTempo)
+                                 tempo: model.trackTempo,
+                                 cutout: model.windowControls)
                         .ignoresSafeArea()
                         .transition(.opacity)
                 }

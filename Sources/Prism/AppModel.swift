@@ -30,6 +30,10 @@ final class AppModel {
     let scrobbler = Scrobbler()
     let downloads = DownloadLog()
     let tempoMemory = TempoMemory()
+    /// The window's close, minimise and zoom buttons, top-left origin — for
+    /// the rim to leave a gap around. Nil in full screen.
+    var windowControls: CGRect?
+
     /// Songs picked with shift- and ⌘-click, in whichever list.
     let selection = SongSelection()
 

@@ -9,7 +9,7 @@ struct PrismApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(model: model)
-                .background(WindowConfigurator())
+                .background(WindowConfigurator { model.windowControls = $0 })
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 760)
@@ -88,11 +88,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// Reaches out of SwiftUI to make the window itself translucent, so the glass
 /// panels have the desktop-grade backing they are designed against.
+///
+/// Also reports where the window's buttons are, so the rim can leave a gap
+/// for them instead of running behind them, and keeps the full-screen title
+/// bar clear: in full screen macOS slides its own title bar in over the top
+/// of the content, with an opaque background `titlebarAppearsTransparent`
+/// does not reach.
 private struct WindowConfigurator: NSViewRepresentable {
+    /// The close-to-zoom buttons, top-left origin, or nil when hidden.
+    let onControls: @MainActor @Sendable (CGRect?) -> Void
+
+    final class Coordinator {
+        var observers: [NSObjectProtocol] = []
+        deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
+        let report = onControls
         DispatchQueue.main.async {
             guard let window = view.window else { return }
+            report(Self.controls(in: window))
+            let center = NotificationCenter.default
+            for name in [NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification,
+                         NSWindow.didExitFullScreenNotification] {
+                let entering = name == NSWindow.didEnterFullScreenNotification
+                context.coordinator.observers.append(center.addObserver(
+                    forName: name, object: window, queue: .main) { _ in
+                    MainActor.assumeIsolated {
+                        report(Self.controls(in: window))
+                        if entering {
+                            // The full-screen title bar is built on entry, and
+                            // again when it is first revealed; clear both.
+                            Self.clearTitlebar(of: window)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                Self.clearTitlebar(of: window)
+                            }
+                        }
+                    }
+                })
+            }
+            Self.clearTitlebar(of: window)
+            window.titlebarSeparatorStyle = .none
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.styleMask.insert(.fullSizeContentView)
@@ -110,4 +149,50 @@ private struct WindowConfigurator: NSViewRepresentable {
         return view
     }
     func updateNSView(_ nsView: NSView, context: Context) {}
+
+    /// Where the traffic lights are, in the content's top-left coordinates —
+    /// nil in full screen, where they are hidden until the title bar slides in.
+    @MainActor
+    static func controls(in window: NSWindow) -> CGRect? {
+        guard !window.styleMask.contains(.fullScreen),
+              let close = window.standardWindowButton(.closeButton),
+              let zoom = window.standardWindowButton(.zoomButton),
+              let content = window.contentView else { return nil }
+        let a = close.convert(close.bounds, to: nil)
+        let b = zoom.convert(zoom.bounds, to: nil)
+        let u = a.union(b)
+        return CGRect(x: u.minX, y: content.frame.height - u.maxY, width: u.width, height: u.height)
+    }
+
+    /// Hides the material behind the title bar — the buttons stay. In full
+    /// screen the buttons live in a separate title-bar window, which is found
+    /// through them.
+    @MainActor
+    static func clearTitlebar(of window: NSWindow) {
+        guard let button = window.standardWindowButton(.closeButton),
+              let host = button.window else { return }
+        if host !== window {
+            host.isOpaque = false
+            host.backgroundColor = .clear
+        }
+        var container: NSView? = button.superview
+        while let v = container, !String(describing: type(of: v)).contains("TitlebarContainer") {
+            container = v.superview
+        }
+        guard let root = container ?? button.superview?.superview else { return }
+        func clear(_ view: NSView) {
+            for sub in view.subviews {
+                if sub is NSVisualEffectView || String(describing: type(of: sub)).contains("Background") {
+                    sub.isHidden = true
+                } else if !(sub is NSButton) {
+                    sub.wantsLayer = true
+                    sub.layer?.backgroundColor = NSColor.clear.cgColor
+                    clear(sub)
+                }
+            }
+        }
+        root.wantsLayer = true
+        root.layer?.backgroundColor = NSColor.clear.cgColor
+        clear(root)
+    }
 }
