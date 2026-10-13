@@ -15,6 +15,15 @@ final class Engine: NSObject {
         volume: 100, muted: false, repeatMode: "NONE", shuffled: false,
         track: nil, queue: [], queueIndex: -1, undoLabel: nil)
 
+    /// The playing song's id, set only when it changes. A song list asks this
+    /// rather than `snapshot`, which is replaced about once a second — every
+    /// row reading the snapshot was every row redrawn every second, which is
+    /// a hitch a second while scrolling.
+    private(set) var currentVideoId: String?
+    /// The same for the player being up and the account being signed in.
+    private(set) var isReady = false
+    private(set) var isSignedIn = false
+
     /// True until the engine reports the player exists.
     var isBooting = true
     /// Raised over the UI so the user can complete Google sign-in.
@@ -545,6 +554,9 @@ extension Engine: WKScriptMessageHandler {
             if let snap = try? JSONDecoder().decode(EngineSnapshot.self, from: data) {
                 if snap.track?.videoId != snapshot.track?.videoId { logTrackChange(snap) }
                 snapshot = snap
+                if currentVideoId != snap.track?.videoId { currentVideoId = snap.track?.videoId }
+                if isReady != snap.ready { isReady = snap.ready }
+                if isSignedIn != snap.signedIn { isSignedIn = snap.signedIn }
                 snapshotAt = Date()
                 if snap.ready { isBooting = false }
                 dumpSnapshot(data)

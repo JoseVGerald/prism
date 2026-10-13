@@ -42,7 +42,7 @@ struct ForYouPane: View {
             }
             .padding(22)
         }
-        .task(id: model.engine.snapshot.ready) {
+        .task(id: model.engine.isReady) {
             model.loadHome()
             model.loadSuggestions()
             model.loadYouTubeHistory()
@@ -116,14 +116,14 @@ struct ForYouPane: View {
         VStack(spacing: 12) {
             LogoMark(size: 44).opacity(0.7)
             Text("Nothing here yet").font(.title3.weight(.medium))
-            Text(model.engine.snapshot.signedIn
+            Text(model.engine.isSignedIn
                  ? "Your YouTube Music picks will load in a moment, and Prism's own listening log fills in as you play."
                  : "Sign in for your YouTube Music picks. Prism also keeps its own listening log on \(PlatformWording.thisDevice) — nothing leaves the device.")
                 .font(.callout).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 440)
             HStack(spacing: 10) {
-                if !model.engine.snapshot.signedIn {
+                if !model.engine.isSignedIn {
                     Button("Sign in") { model.engine.beginSignIn() }
                         .buttonStyle(.plainHit)
                         .font(.callout.weight(.medium))
@@ -233,7 +233,7 @@ struct ForYouPane: View {
                     let songs = shelf.items.compactMap(\.asTrack)
                     ForEach(shelf.items) { item in
                         QuickPickRow(item: item,
-                                     isCurrent: item.videoId == model.engine.snapshot.track?.videoId) {
+                                     isCurrent: item.videoId == model.engine.currentVideoId) {
                             if let i = songs.firstIndex(where: { $0.videoId == item.videoId }),
                                selection.click(i, in: songs, scope: scope) { return }
                             model.play(item)

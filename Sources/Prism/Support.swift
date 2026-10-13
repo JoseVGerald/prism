@@ -1,4 +1,5 @@
 import SwiftUI
+import ImageIO
 
 // MARK: - Formatting
 
@@ -42,37 +43,138 @@ struct Artwork: View {
     let url: String?
     var corner: CGFloat = 8
 
+    @State private var loaded: (url: String, image: CGImage)?
+    @State private var failed = false
+
+    /// The cover for `url` if it is in hand: loaded here, or already decoded
+    /// by any other row — so a row scrolled back into view draws its cover in
+    /// its first frame instead of fading it in again.
+    private var image: CGImage? {
+        guard let url else { return nil }
+        if let loaded, loaded.url == url { return loaded.image }
+        return ArtworkCache.shared.cached(url)
+    }
+
     var body: some View {
-        // scaledToFill has no intrinsic limit, so it grows the ZStack and the
-        // clipShape below ends up clipping to that grown size rather than the
-        // caller's frame. Wide 16:9 video thumbnails then spill out of their
-        // box, shunting row text sideways and bleeding into the equalizer.
-        // Pinning to the geometry and clipping there is what actually contains it.
-        GeometryReader { geo in
-            ZStack {
-                RoundedRectangle(cornerRadius: corner, style: .continuous)
-                    .fill(.white.opacity(0.06))
-                if let url, let parsed = URL(string: url) {
-                    AsyncImage(url: parsed,
-                               transaction: .init(animation: .easeOut(duration: 0.25))) { phase in
-                        if let image = phase.image {
-                            image.resizable().scaledToFill()
-                                .frame(width: geo.size.width, height: geo.size.height)
-                                .clipped()
-                                .transition(.opacity)
-                        } else if phase.error != nil {
-                            Image(systemName: "music.note").foregroundStyle(.secondary)
-                        } else {
-                            Color.clear
-                        }
-                    }
-                } else {
+        // Sized by the caller's frame, never by the image: scaledToFill reports
+        // the picture's own size, which used to grow the box and spill wide
+        // video thumbnails into the row. An overlay is laid out in its base's
+        // frame and the clip is that frame — the same containment the
+        // GeometryReader here used to buy, without a reader in every row.
+        Color.white.opacity(0.06)
+            .overlay {
+                if let image {
+                    Image(decorative: image, scale: 1)
+                        .resizable()
+                        .scaledToFill()
+                        .transition(.opacity)
+                } else if url == nil || failed {
                     Image(systemName: "music.note").foregroundStyle(.secondary)
                 }
             }
-            .frame(width: geo.size.width, height: geo.size.height)
             .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+            .task(id: url) {
+                failed = false
+                guard let url, ArtworkCache.shared.cached(url) == nil else { return }
+                let image = await ArtworkCache.shared.load(url)
+                guard !Task.isCancelled else { return }
+                if let image {
+                    withAnimation(.easeOut(duration: 0.25)) { loaded = (url, image) }
+                } else {
+                    failed = true
+                }
+            }
+    }
+}
+
+/// Covers, fetched once and decoded off the main thread, for every list.
+///
+/// `AsyncImage` keeps nothing. A row that left a lazy list and came back
+/// fetched its cover again, and the picture was decoded on the main thread
+/// when it was first drawn — a stall for every row arriving mid-scroll, and
+/// a song row swaps its number for its cover on hover, so even moving the
+/// pointer down a list started a download per row.
+@MainActor
+final class ArtworkCache {
+    static let shared = ArtworkCache()
+
+    private final class Entry {
+        let image: CGImage
+        init(_ image: CGImage) { self.image = image }
+    }
+
+    /// Decoded bitmaps, by URL. About 200 MB before the oldest are let go —
+    /// several thousand thumbnails, or a couple of hundred full-size covers.
+    private let images: NSCache<NSString, Entry> = {
+        let cache = NSCache<NSString, Entry>()
+        cache.totalCostLimit = 200 * 1024 * 1024
+        return cache
+    }()
+    private var loading: [String: Task<Decoded?, Never>] = [:]
+
+    /// Crosses from the decoding task to the main actor. A CGImage is
+    /// immutable once made, so handing it over is safe.
+    struct Decoded: @unchecked Sendable { let image: CGImage }
+
+    func cached(_ url: String) -> CGImage? {
+        images.object(forKey: url as NSString)?.image
+    }
+
+    func load(_ url: String) async -> CGImage? {
+        if let hit = cached(url) { return hit }
+        // Two rows showing one cover share one download.
+        let task = loading[url] ?? Task.detached(priority: .userInitiated) {
+            guard let parsed = URL(string: url),
+                  let (data, _) = try? await URLSession.shared.data(from: parsed)
+            else { return nil }
+            return ArtworkCache.decode(data).map(Decoded.init)
         }
+        loading[url] = task
+        let decoded = await task.value
+        loading[url] = nil
+        guard let image = decoded?.image else { return nil }
+        images.setObject(Entry(image), forKey: url as NSString, cost: image.bytesPerRow * image.height)
+        return image
+    }
+
+    /// Decoded now, here, rather than lazily at first draw on the main
+    /// thread. Capped at 1200 px — no cover is drawn bigger than that.
+    nonisolated static func decode(_ data: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 1200,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+}
+
+/// A small action in a song row: an icon over a faint disc that brightens on
+/// hover.
+///
+/// Not `GlassIconButton`. A list shows dozens of these at once, and every
+/// glass disc samples and refracts what is behind it — again on every frame
+/// the list moves. Three per row made scrolling a playlist drop a third of
+/// its frames.
+struct RowActionButton: View {
+    let system: String
+    let help: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: system)
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(.white.opacity(hovering ? 0.18 : 0.07)))
+        }
+        .buttonStyle(PressableButtonStyle())
+        .onHover { hovering = $0 }
+        .help(help)
     }
 }
 

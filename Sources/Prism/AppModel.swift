@@ -163,7 +163,12 @@ final class AppModel {
         engine.onDocumentReady = { [quality] in quality.applyToEngine() }
         #if canImport(AppKit)
         notch = NotchController(model: self)
-        notch.open()
+        // Next turn, not now: this init runs inside SwiftUI's first graph
+        // update (the App's @State), and ordering the island's panel front
+        // lays out its hosting view right there — a graph update inside a
+        // graph update, which AttributeGraph aborts on. It crashed every
+        // launch with the lid display (the one with the notch) attached.
+        Task { @MainActor [weak self] in self?.notch.open() }
         probe.startIfEnabled()
         ambientPanel = AmbientPanelController(model: self)
         startIdleWatch()
@@ -693,6 +698,32 @@ final class AppModel {
                                      to: MyPlaylist(playlistId: args[0], title: args[0]))
                         }
                     case "route": if parts.count > 1, parts[1] == "downloads" { self.route = .downloads }
+                    case "open":
+                        // open <browseId> — a playlist, album or artist page.
+                        if parts.count > 1 {
+                            self.open(Shelf(browseId: parts[1], title: parts[1], subtitle: nil,
+                                            artworkURL: nil, kind: "playlist"))
+                        }
+                    case "toggle":
+                        // toggle rim|flow|queue|cutout — for measuring what costs what.
+                        switch parts.count > 1 ? parts[1] : "" {
+                        case "rim": self.ambient.rimGlow.toggle()
+                        case "flow": self.ambient.flow.toggle()
+                        case "queue": self.showQueue.toggle()
+                        case "cutout": self.windowControls = self.windowControls == nil
+                            ? CGRect(x: 20, y: 18, width: 52, height: 14) : nil
+                        default: break
+                        }
+                        self.evalLog("app.log", "rim \(self.ambient.rimGlow) flow \(self.ambient.flow) "
+                                     + "queue \(self.showQueue) cutout \(self.windowControls != nil)")
+                    case "scrollTest":
+                        #if canImport(AppKit)
+                        let options = parts.count > 1 ? parts[1] : ""
+                        ScrollProbe.run(front: options.contains("front"),
+                                        pointer: options.contains("pointer")) { [weak self] in
+                            self?.evalLog("perf.log", $0)
+                        }
+                        #endif
                     default: self.evalLog("app.log", "unknown command")
                     }
                 }

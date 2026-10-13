@@ -252,7 +252,7 @@ struct AddToPlaylistMenu: View {
             ForEach(model.myPlaylists) { p in
                 Button(p.title) { model.add(tracks(), to: p) }
             }
-        } else if !model.engine.snapshot.signedIn {
+        } else if !model.engine.isSignedIn {
             Text("Sign in to see your playlists")
         }
     }

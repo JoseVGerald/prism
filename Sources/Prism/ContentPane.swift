@@ -364,11 +364,11 @@ private struct LibraryPane: View {
                 VStack(spacing: 14) {
                     Image(systemName: "square.stack")
                         .font(.system(size: 38)).foregroundStyle(.secondary)
-                    Text(model.engine.snapshot.signedIn
+                    Text(model.engine.isSignedIn
                          ? "Nothing in your library yet."
                          : "Sign in to load your library.")
                         .foregroundStyle(.secondary)
-                    if !model.engine.snapshot.signedIn {
+                    if !model.engine.isSignedIn {
                         Button("Sign in") { model.engine.beginSignIn() }
                             .buttonStyle(.borderedProminent)
                     } else {
@@ -453,24 +453,28 @@ private struct DetailPane: View {
             } else if let detail = model.detail,
                       !detail.tracks.isEmpty || !(detail.sections ?? []).isEmpty {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 20) {
+                    // The rows sit straight in the lazy stack. They used to be
+                    // one VStack inside it, which the lazy stack sees as a
+                    // single child — so every row of a long playlist was built
+                    // and kept, not just the ones on screen.
+                    LazyVStack(alignment: .leading, spacing: 0) {
                         if !detail.tracks.isEmpty {
                             // An artist's list is their top songs, not a
                             // numbered tracklist, so the ordinals would be
                             // meaningless there.
-                            if detail.kind == "artist" { SectionHeader("Top songs") }
-                            VStack(spacing: 0) {
-                                ForEach(Array(detail.tracks.enumerated()), id: \.element.id) { i, t in
-                                    TrackRow(model: model, track: t,
-                                             ordinal: detail.kind == "artist" ? nil : i + 1,
-                                             list: detail.tracks, index: i, scope: "detail")
-                                }
+                            if detail.kind == "artist" {
+                                SectionHeader("Top songs").padding(.bottom, 20)
+                            }
+                            ForEach(Array(detail.tracks.enumerated()), id: \.element.id) { i, t in
+                                TrackRow(model: model, track: t,
+                                         ordinal: detail.kind == "artist" ? nil : i + 1,
+                                         list: detail.tracks, index: i, scope: "detail")
                             }
                         }
                         // Albums, Singles & EPs, Videos — the carousels that
                         // make an artist page an artist page.
                         ForEach(detail.sections ?? []) { section in
-                            SectionHeader(section.title)
+                            SectionHeader(section.title).padding(.top, 20).padding(.bottom, 20)
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 14) {
                                     ForEach(section.items) { item in
@@ -586,7 +590,9 @@ struct TrackRow: View {
 
     @State private var hovering = false
 
-    private var isCurrent: Bool { model.engine.snapshot.track?.videoId == track.videoId }
+    /// Not `snapshot.track`: the snapshot is replaced every second, and a row
+    /// reading it is redrawn every second with it.
+    private var isCurrent: Bool { model.engine.currentVideoId == track.videoId }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -642,21 +648,16 @@ struct TrackRow: View {
             // consolation prize.
             #if canImport(AppKit)
             HStack(spacing: 6) {
-                GlassIconButton(system: "text.line.first.and.arrowtriangle.forward",
-                                size: 12, diameter: 28) {
+                RowActionButton(system: "text.line.first.and.arrowtriangle.forward",
+                                help: "Play next") {
                     model.enqueue(track, atEnd: false)
                 }
-                .help("Play next")
-
-                GlassIconButton(system: "text.append", size: 12, diameter: 28) {
+                RowActionButton(system: "text.append", help: "Add to queue") {
                     model.enqueue(track, atEnd: true)
                 }
-                .help("Add to queue")
-
-                GlassIconButton(system: "arrow.down.circle", size: 12, diameter: 28) {
+                RowActionButton(system: "arrow.down.circle", help: "Download for offline") {
                     model.download(track)
                 }
-                .help("Download for offline")
             }
             .opacity(hovering ? 1 : PlatformInteraction.restingActionOpacity)
             .animation(.easeOut(duration: 0.15), value: hovering)
