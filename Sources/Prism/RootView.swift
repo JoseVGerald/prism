@@ -168,7 +168,9 @@ struct RootView: View {
         // presented from the root as a sheet.
         .sheet(isPresented: $model.showSettings) {
             VStack(spacing: 0) {
-                SettingsPanel(model: model)
+                // The window's height less room for Done: a sheet hangs inside
+                // its window, so the screen's height is the wrong limit here.
+                SettingsPanel(model: model, maxHeight: max(300, model.windowSize.height - 110))
                 Button("Done") { model.showSettings = false }
                     .keyboardShortcut(.defaultAction)
                     .padding(.bottom, 16)

@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#endif
 
 /// The settings popover behind the gear on Now Playing, and the same panel the
 /// Settings menu opens.
@@ -7,6 +10,9 @@ import SwiftUI
 /// ambient popover competing for the same job.
 struct SettingsPanel: View {
     @Bindable var model: AppModel
+    /// The tallest the panel may be. Unset, it is the screen's height less a
+    /// margin — right for the popover. The sheet passes its window's room.
+    var maxHeight: CGFloat? = nil
 
     private var quality: QualitySettings { model.quality }
     private var ambient: AmbientSettings { model.ambient }
@@ -18,23 +24,51 @@ struct SettingsPanel: View {
     }
     @State private var tab: Tab = .ambient
     @Environment(\.openURL) private var openURL
+    /// How tall the settings are, measured, so the panel is exactly that
+    /// tall when it fits and scrolls when it does not.
+    @State private var contentHeight: CGFloat = SettingsPanel.lastHeight
+    /// The last measured height, so the panel opens at its size rather than
+    /// opening at a guess and resizing a frame later.
+    @MainActor private static var lastHeight: CGFloat = 560
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Picker("", selection: $tab) {
-                ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+        // Scrolls. The Ambient side, with the rim on, is taller than a
+        // laptop screen; unscrolled, the panel ran off both ends of the
+        // display, taking the tab switch with it at the top and "Show
+        // ambient now" at the bottom.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Picker("", selection: $tab) {
+                    ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
 
-            switch tab {
-            case .ambient: ambientSection
-            case .quality: qualitySection
+                switch tab {
+                case .ambient: ambientSection
+                case .quality: qualitySection
+                }
+            }
+            .padding(20)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                contentHeight = $0
+                SettingsPanel.lastHeight = $0
             }
         }
-        .padding(20)
-        .frame(width: 340)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(width: 340, height: min(contentHeight, maxHeight ?? screenRoom))
         .task { quality.refresh() }
+    }
+
+    /// Room for the panel: the screen less the window's title bar, the gear
+    /// it hangs from, and a margin.
+    private var screenRoom: CGFloat {
+        #if canImport(AppKit)
+        let screen = NSScreen.main?.visibleFrame.height ?? 800
+        return max(360, screen - 220)
+        #else
+        return 640
+        #endif
     }
 
     // MARK: Ambient (frame 1e)
@@ -117,15 +151,18 @@ struct SettingsPanel: View {
                     .labelsHidden()
                     .fixedSize()
                 }
+                Text(ambient.lyricStyle == .random
+                     ? "A different style for each song in locked mode — click the cover there to show them."
+                     : "How lyrics move in locked mode — click the cover there to show them.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 labelled("Lyrics timing", lyricsDelayLabel) {
                     Slider(value: Binding(get: { ambient.lyricsDelay },
                                           set: { ambient.lyricsDelay = ($0 * 20).rounded() / 20 }),
                            in: -0.5...1.0)
                 }
-                .padding(.top, 6)
-                Text(ambient.lyricStyle == .random
-                     ? "A different style for each song in locked mode — click the cover there to show them."
-                     : "How lyrics move in locked mode — click the cover there to show them.")
+                .padding(.top, 8)
+                Text("Slide right if the words come before the singing, left if they come after.")
                     .font(.caption2).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

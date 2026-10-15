@@ -727,6 +727,7 @@ final class AppModel {
                         self.evalLog("app.log", "outputs: playing " + self.audio.playing.map(\.name).joined(separator: " + ")
                                      + " | default " + (self.audio.current?.name ?? "joined/none"))
                         #endif
+                    case "settings": self.showSettings.toggle()
                     case "scrollTest":
                         #if canImport(AppKit)
                         let options = parts.count > 1 ? parts[1] : ""
