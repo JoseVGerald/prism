@@ -107,4 +107,4 @@ Prism is an independent personal project. It is not affiliated with, endorsed by
 
 ---
 
-<p align="center">Built by <a href="https://github.com/VIPPYJose">Jose Gerald</a></p>
+<p align="center">Built by <a href="https://github.com/JoseVGerald">Jose Gerald</a></p>
