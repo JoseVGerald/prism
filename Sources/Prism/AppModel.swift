@@ -716,6 +716,17 @@ final class AppModel {
                         }
                         self.evalLog("app.log", "rim \(self.ambient.rimGlow) flow \(self.ambient.flow) "
                                      + "queue \(self.showQueue) cutout \(self.windowControls != nil)")
+                    case "output", "outputOnly":
+                        // output <name part> ticks or unticks it; outputOnly plays only there.
+                        #if canImport(AppKit)
+                        let part = parts.count > 1 ? parts[1].lowercased() : ""
+                        self.audio.refresh()
+                        if let d = self.audio.devices.first(where: { $0.name.lowercased().contains(part) }) {
+                            if parts[0] == "output" { self.toggleOutput(d) } else { self.selectOutput(d) }
+                        }
+                        self.evalLog("app.log", "outputs: playing " + self.audio.playing.map(\.name).joined(separator: " + ")
+                                     + " | default " + (self.audio.current?.name ?? "joined/none"))
+                        #endif
                     case "scrollTest":
                         #if canImport(AppKit)
                         let options = parts.count > 1 ? parts[1] : ""
