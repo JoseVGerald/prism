@@ -4,3 +4,6 @@
 Prism.app/
 
 .DS_Store
+
+# Local editor/agent settings (machine-specific paths)
+.claude/settings.local.json

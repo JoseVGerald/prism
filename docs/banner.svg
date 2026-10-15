@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-label="Prism — a native YouTube Music client for macOS and iPhone">
+  <defs>
+    <!-- The note mark from Sources/Prism/Logo.swift, in its own design space (box 31,44 → 122,143). -->
+    <g id="note">
+      <rect x="56" y="60" width="9" height="68" rx="4.5"/>
+      <rect x="111" y="46" width="9" height="68" rx="4.5"/>
+      <polygon points="56,60 120,46 120,63 56,77"/>
+      <ellipse cx="47" cy="129" rx="16" ry="11.5" transform="rotate(-20 47 129)"/>
+      <ellipse cx="102" cy="115" rx="16" ry="11.5" transform="rotate(-20 102 115)"/>
+    </g>
+    <linearGradient id="ground" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#29214D"/>
+      <stop offset="1" stop-color="#0D1429"/>
+    </linearGradient>
+    <linearGradient id="icon" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2E2558"/>
+      <stop offset="1" stop-color="#0A1222"/>
+    </linearGradient>
+    <radialGradient id="glowRed" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FF3A5C" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#FF3A5C" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowBlue" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#0A85FF" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#0A85FF" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="frame"><rect width="1280" height="400" rx="32"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="1280" height="400" fill="url(#ground)"/>
+    <circle cx="1120" cy="40" r="380" fill="url(#glowRed)"/>
+    <circle cx="880" cy="420" r="420" fill="url(#glowBlue)"/>
+    <!-- faint waveform across the bottom, a nod to the equalizers -->
+    <g fill="#FFFFFF" opacity="0.08" transform="translate(1196 372) scale(0.62) translate(-1148 -352)">
+      <rect x="720" y="318" width="10" height="34" rx="5"/><rect x="742" y="300" width="10" height="52" rx="5"/>
+      <rect x="764" y="282" width="10" height="70" rx="5"/><rect x="786" y="306" width="10" height="46" rx="5"/>
+      <rect x="808" y="270" width="10" height="82" rx="5"/><rect x="830" y="292" width="10" height="60" rx="5"/>
+      <rect x="852" y="258" width="10" height="94" rx="5"/><rect x="874" y="286" width="10" height="66" rx="5"/>
+      <rect x="896" y="300" width="10" height="52" rx="5"/><rect x="918" y="266" width="10" height="86" rx="5"/>
+      <rect x="940" y="290" width="10" height="62" rx="5"/><rect x="962" y="310" width="10" height="42" rx="5"/>
+      <rect x="984" y="278" width="10" height="74" rx="5"/><rect x="1006" y="298" width="10" height="54" rx="5"/>
+      <rect x="1028" y="316" width="10" height="36" rx="5"/><rect x="1050" y="296" width="10" height="56" rx="5"/>
+      <rect x="1072" y="322" width="10" height="30" rx="5"/><rect x="1094" y="306" width="10" height="46" rx="5"/>
+      <rect x="1116" y="326" width="10" height="26" rx="5"/><rect x="1138" y="314" width="10" height="38" rx="5"/>
+    </g>
+  </g>
+  <rect x="0.5" y="0.5" width="1279" height="399" rx="31.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.08"/>
+
+  <!-- App icon: 216pt rounded square, mark at 62% with a 7.5% chromatic split (as AppIconView). -->
+  <rect x="96" y="92" width="216" height="216" rx="48.6" fill="url(#icon)"/>
+  <rect x="96.5" y="92.5" width="215" height="215" rx="48.1" fill="none" stroke="#FFFFFF" stroke-opacity="0.10"/>
+  <use xlink:href="#note" href="#note" fill="#FF3A5C" transform="translate(194 200) scale(1.3535) translate(-76.5 -93.5)"/>
+  <use xlink:href="#note" href="#note" fill="#0A85FF" transform="translate(214 200) scale(1.3535) translate(-76.5 -93.5)"/>
+  <use xlink:href="#note" href="#note" fill="#FFFFFF" transform="translate(204 200) scale(1.3535) translate(-76.5 -93.5)"/>
+
+  <!-- Wordmark with the same split -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Helvetica, Arial, sans-serif" font-weight="700" font-size="112" letter-spacing="-2">
+    <text x="352" y="200" fill="#FF3A5C">Prism</text>
+    <text x="360" y="200" fill="#0A85FF">Prism</text>
+    <text x="356" y="200" fill="#FFFFFF">Prism</text>
+  </g>
+  <text x="358" y="256" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="30" font-weight="500" fill="#D7DAF0">A native YouTube Music client for macOS and iPhone</text>
+  <text x="358" y="300" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="21" fill="#9095BD">SwiftUI · Liquid Glass · beat-matched AutoMix · synced lyrics · notch island</text>
+</svg>

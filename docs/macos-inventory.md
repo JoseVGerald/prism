@@ -7,7 +7,7 @@ and every bug and hard limit discovered while building them.
 The bugs are the more useful half. A port re-implements mechanisms, and the
 fastest way to reintroduce a bug is not to know it was ever fixed.
 
-Full detail for each trap lives in `README.md` under *Things that will bite
+Full detail for each trap lives in [`engineering-notes.md`](engineering-notes.md) under *Things that will bite
 you*; this is the index and the shape of the thing.
 
 ---
