@@ -18,6 +18,32 @@ enum Bridge {
   const PLAYER = () => document.querySelector('#movie_player');
   const QUEUE  = () => document.querySelector('ytmusic-player-queue')?.queue;
 
+  // YouTube's command dispatcher: what a click on a song, a playlist or a
+  // menu item inside the web player ends in. It was `resolveCommand` on the
+  // <ytmusic-app> element itself until YouTube made the element a thin shell
+  // over an inner `inst` (seen October 2026). The method went with it, every
+  // play from Prism threw, and the cmd wrapper swallowed it — clicking a song
+  // did nothing. Tried from the most direct to the least; throws when none is
+  // there, so each caller's own fallback still runs.
+  const resolve = (command) => {
+    const app = APP();
+    if (!app) throw new Error('no app');
+    if (typeof app.resolveCommand === 'function') return app.resolveCommand(command);
+    const inst = app.inst || app.polymerController || app.controllerProxy;
+    if (inst) {
+      if (typeof inst.resolveCommand === 'function') return inst.resolveCommand(command);
+      // Hands the command to the page's global resolver — the same one the
+      // old element method fronted.
+      if (typeof inst.handleCommandWithCommandHandler === 'function')
+        return inst.handleCommandWithCommandHandler(command);
+      if ((command.watchEndpoint || command.browseEndpoint)
+          && typeof inst.handleNavigationEndpoint === 'function')
+        return inst.handleNavigationEndpoint(command);
+      if (typeof inst.handleServiceEndpoint === 'function') return inst.handleServiceEndpoint(command);
+    }
+    throw new Error('no command resolver');
+  };
+
 
   const post = (msg) => {
     try { window.webkit.messageHandlers.prism.postMessage(JSON.stringify(msg)); }
@@ -901,15 +927,12 @@ enum Bridge {
     playVideo: (videoId, radio) => {
       blame(radio ? 'play track — seeds a RADIO, which replaces the queue'
                   : 'play track (no radio)');
-      const app = APP();
-      if (!app) { location.href = '/watch?v=' + videoId; return; }
-      if (radio) {
-        const known = endpointCache.get(videoId)?.startRadio;
-        if (known) { app.resolveCommand(known); return; }
-        app.resolveCommand({ watchEndpoint: { videoId, playlistId: 'RDAMVM' + videoId } });
-        return;
-      }
-      app.resolveCommand({ watchEndpoint: { videoId } });
+      const known = radio ? endpointCache.get(videoId)?.startRadio : null;
+      const command = known || { watchEndpoint: radio
+        ? { videoId, playlistId: 'RDAMVM' + videoId } : { videoId } };
+      // A page load as the last resort: slower, but it plays.
+      try { resolve(command); }
+      catch (e) { location.href = '/watch?v=' + videoId + (radio ? '&list=RDAMVM' + videoId : ''); }
     },
 
     // Lets Swift attribute a change it is about to cause. Used by the
@@ -1178,16 +1201,18 @@ enum Bridge {
 
     playPlaylist: (playlistId) => {
       blame('play playlist');
-      const app = APP();
-      if (app) app.resolveCommand({ watchEndpoint: { playlistId } });
+      try { resolve({ watchEndpoint: { playlistId } }); }
+      catch (e) { location.href = '/watch?list=' + playlistId; }
     },
 
     playBrowse: (browseId, playlistId) => {
       blame('play album/artist');
-      const app = APP();
-      if (!app) return;
-      if (playlistId) app.resolveCommand({ watchEndpoint: { playlistId } });
-      else app.resolveCommand({ browseEndpoint: { browseId } });
+      try {
+        if (playlistId) resolve({ watchEndpoint: { playlistId } });
+        else resolve({ browseEndpoint: { browseId } });
+      } catch (e) {
+        location.href = playlistId ? '/watch?list=' + playlistId : '/browse/' + browseId;
+      }
     },
 
   };
@@ -1376,7 +1401,7 @@ const allScopeSearch = async (reqId, query) => {
     // what proves the data is fresh — without it a read can land on the old row
     // before the rebuild finishes and report the stale value anyway.
     const stale = rowIn(settingsDialog());
-    app.resolveCommand({ applicationSettingsEndpoint: { hack: true } });
+    try { resolve({ applicationSettingsEndpoint: { hack: true } }); } catch (e) { return null; }
 
     for (let i = 0; i < 40; i++) {
       const dlg = settingsDialog();
@@ -1454,7 +1479,7 @@ const allScopeSearch = async (reqId, query) => {
       }
 
       let dispatched = true;
-      try { APP().resolveCommand(option.updateServiceEndpoint); }
+      try { resolve(option.updateServiceEndpoint); }
       catch (e) { dispatched = false; }
       if (dispatched) audioQualityWritten = want;
       await settle(700);
@@ -1581,7 +1606,7 @@ const allScopeSearch = async (reqId, query) => {
         return;
       }
       let ok = true;
-      try { app.resolveCommand(ep); } catch (e) { ok = false; }
+      try { resolve(ep); } catch (e) { ok = false; }
       await new Promise(r => setTimeout(r, 1200));
       post({ kind: 'download', requestId: reqId, result: {
         supported: true, ok, reason: '' }});
