@@ -730,6 +730,19 @@ final class AppModel {
                                      + " | default " + (self.audio.current?.name ?? "joined/none"))
                         #endif
                     case "settings": self.showSettings.toggle()
+                    case "uiBench":
+                        #if canImport(AppKit)
+                        self.evalLog("app.log", DebugShots.uiBench(self, open: parts.count > 1 && parts[1] == "1"))
+                        #endif
+                    case "routeTo":
+                        switch parts.count > 1 ? parts[1] : "" {
+                        case "nowPlaying": self.route = .nowPlaying
+                        case "forYou": self.route = .forYou
+                        case "library": self.route = .library; self.loadLibraryIfNeeded()
+                        case "search": self.route = .search
+                        default: break
+                        }
+                        self.evalLog("app.log", "route \(self.route)")
                     case "flag":
                         // flag <name> — flips a debug switch.
                         if parts.count > 1 {

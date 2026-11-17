@@ -247,9 +247,12 @@ final class EqualizerBarsView: NSView {
                 layer.position = CGPoint(x: x, y: new.cy)
                 layer.bounds.size.width = width
             }
-            // Keep what was showing; a column new to the world starts lit by
-            // one block, as a silent bar is.
-            show(min(max(heights[c], 0), peak), in: c, new)
+            // Keep what was showing. A column new to the world takes its
+            // place in the decorative pattern, so an equalizer that appears
+            // while nothing plays rests mid-motion rather than as a flat row.
+            let resting = Int((Self.drift(c, Date.timeIntervalSinceReferenceDate, seed: look.seed)
+                               * Double(peak)).rounded())
+            show(min(heights[c] >= 0 ? heights[c] : resting, peak), in: c, new)
         }
         CATransaction.commit()
         painted = (look, size, scale)

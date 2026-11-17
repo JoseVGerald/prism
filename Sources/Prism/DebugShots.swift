@@ -1,12 +1,45 @@
 #if canImport(AppKit)
 import AppKit
 import QuartzCore
+import SwiftUI
 
 /// Debug only (PRISM_EVAL): pictures of things that are otherwise only
 /// checkable by eye, written to `~/.prism-eval/`.
 @MainActor
 enum DebugShots {
     private static var probeLayer: CALayer?
+    private static var uiWindow: NSWindow?
+
+    /// The app's panes in a window behind the desktop, to look at them
+    /// without bringing the real window forward. Returns its window number.
+    static func uiBench(_ model: AppModel, open: Bool) -> String {
+        uiWindow?.orderOut(nil)
+        uiWindow = nil
+        guard open else { return "ui bench closed" }
+        let size = CGSize(width: 1180, height: 760)
+        let w = NSWindow(contentRect: CGRect(origin: CGPoint(x: 40, y: 40), size: size),
+                         styleMask: [.borderless], backing: .buffered, defer: false)
+        w.isOpaque = true
+        w.backgroundColor = NSColor(calibratedWhite: 0.08, alpha: 1)
+        w.level = .init(Int(CGWindowLevelForKey(.desktopWindow)) - 1)
+        w.ignoresMouseEvents = true
+        w.isReleasedWhenClosed = false
+        w.contentView = NSHostingView(rootView:
+            VStack(spacing: 14) {
+                HStack(spacing: 14) {
+                    ContentPane(model: model)
+                    QueuePanel(model: model)
+                }
+                NowPlayingBar(model: model)
+            }
+            .padding(14)
+            .frame(width: size.width, height: size.height)
+            .preferredColorScheme(.dark)
+            .environment(\.artPalette, model.palette))
+        w.orderFrontRegardless()
+        uiWindow = w
+        return "ui bench window \(w.windowNumber)"
+    }
     private static var bench: NSWindow?
     private static weak var benchHost: RimHostView?
     static var benchTicks: Int { benchHost?.debugTicks ?? -1 }
