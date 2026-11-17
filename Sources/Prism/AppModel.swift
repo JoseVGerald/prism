@@ -152,6 +152,10 @@ final class AppModel {
     func closeFloating() {
         #if canImport(AppKit)
         notch.close()
+        // Every equalizer went with the window and the island. One torn
+        // down with its window never hears that it left it, so its hold on
+        // the capture is let go here.
+        liveAudio.releaseAll(prefix: "equalizer ")
         #endif
     }
 
