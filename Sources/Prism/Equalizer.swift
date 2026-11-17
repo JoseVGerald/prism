@@ -28,19 +28,14 @@ struct EqualizerView: View {
     @State private var holder = "equalizer \(UUID().uuidString)"
 
     var body: some View {
-        bars
-            .allowsHitTesting(false)
-            // Capture runs only while an equalizer that wants it is on screen and
-            // the music is playing.
-            .onAppear { audio?.hold(holder, isPlaying) }
-            .onChange(of: isPlaying) { _, playing in audio?.hold(holder, playing) }
-            .onDisappear { audio?.hold(holder, false) }
+        bars.allowsHitTesting(false)
     }
 
     #if canImport(AppKit)
     /// Core Animation moves the bars on the Mac — see `EqualizerBarsView` for
     /// why not a timeline. This view is only re-evaluated when the artwork's
-    /// colours or the play state change.
+    /// colours or the play state change. The bars hold the audio capture
+    /// open themselves, for as long as they are playing and can be seen.
     private var bars: some View {
         EqualizerHost(look: EqualizerLook(
             top: palette.top.prismRGBA, mid: palette.mid.prismRGBA, bottom: palette.bottom.prismRGBA,
@@ -61,6 +56,11 @@ struct EqualizerView: View {
         }
         // Painted by Metal rather than on the CPU.
         .drawingGroup()
+        // Capture runs only while an equalizer that wants it is on screen and
+        // the music is playing.
+        .onAppear { audio?.hold(holder, isPlaying) }
+        .onChange(of: isPlaying) { _, playing in audio?.hold(holder, playing) }
+        .onDisappear { audio?.hold(holder, false) }
     }
 
     private func blocks(_ t: Double) -> some View {

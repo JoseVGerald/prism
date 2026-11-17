@@ -136,7 +136,10 @@ struct NotchUtilityView: View {
     }
 
     private var clock: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { tl in
+        // On the minute — it shows hours and minutes. This face is laid out
+        // beside the player's whether or not it is showing, so a clock that
+        // ticked every second woke the app every second, all day.
+        TimelineView(.everyMinute) { tl in
             VStack(alignment: .leading, spacing: 2) {
                 Text(tl.date, format: .dateTime.hour().minute())
                     .font(.system(size: 34, weight: .light))

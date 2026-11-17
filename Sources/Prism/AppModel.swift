@@ -730,6 +730,13 @@ final class AppModel {
                                      + " | default " + (self.audio.current?.name ?? "joined/none"))
                         #endif
                     case "settings": self.showSettings.toggle()
+                    case "flag":
+                        // flag <name> — flips a debug switch.
+                        if parts.count > 1 {
+                            if self.debugFlags.contains(parts[1]) { self.debugFlags.remove(parts[1]) }
+                            else { self.debugFlags.insert(parts[1]) }
+                        }
+                        self.evalLog("app.log", "flags: \(self.debugFlags.sorted().joined(separator: " "))")
                     case "benchTicks":
                         #if canImport(AppKit)
                         self.evalLog("app.log", "bench ticks \(DebugShots.benchTicks)")
@@ -751,6 +758,18 @@ final class AppModel {
                             v.subviews.forEach(walkFlow)
                         }
                         NSApp.windows.compactMap(\.contentView).forEach(walkFlow)
+                        #endif
+                    case "flowstep":
+                        // flowstep <fps> steps the line while playing; flowstep 0 animates it again.
+                        #if canImport(AppKit)
+                        let fps = parts.count > 1 ? Double(parts[1]) ?? 0 : 0
+                        FlowLayer.debugStepped = fps > 0 ? fps : nil
+                        func walkStep(_ v: NSView) {
+                            (v as? FlowHostView)?.debugRefresh()
+                            v.subviews.forEach(walkStep)
+                        }
+                        NSApp.windows.compactMap(\.contentView).forEach(walkStep)
+                        self.evalLog("app.log", "flow stepped: \(fps)")
                         #endif
                     case "rimdebug":
                         #if canImport(AppKit)
@@ -921,6 +940,10 @@ final class AppModel {
     /// another app or miniaturised, which is when the equalizer should stop
     /// animating — see WindowVisibility.
     var windowVisible = true
+
+    /// Debug (PRISM_EVAL): named switches for trying a change against the
+    /// way things are, on the running app. Empty in normal use.
+    var debugFlags: Set<String> = []
 
     private var searchTask: Task<Void, Never>?
     private var paletteTask: Task<Void, Never>?

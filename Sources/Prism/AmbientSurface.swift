@@ -22,6 +22,7 @@ struct AmbientSurface: View {
     @State private var hoveringArt = false
     @State private var chromeVisible = true
     @State private var volumeShown = false
+    @State private var seen = true
     @State private var idleTask: Task<Void, Never>?
     @State private var handover = AmbientTransition.Handover()
     /// This song's style when the setting is Random, picked as the song starts.
@@ -67,7 +68,9 @@ struct AmbientSurface: View {
                              flow: model.ambient.flow,
                              tempo: model.trackTempo)
 
-                if showingLyrics { lyricsFace } else { coverFace(progress: e) }
+                if showingLyrics { lyricsFace } else if model.debugFlags.contains("flat") {
+                    coverFace(progress: e).drawingGroup()
+                } else { coverFace(progress: e) }
             }
         }
         .ignoresSafeArea()
@@ -86,9 +89,12 @@ struct AmbientSurface: View {
         // this surface is up and something is playing. It used to be held
         // paused too — hours of the system's screen-capture machinery
         // listening to silence while the Mac sat idle.
-        .onChange(of: playing, initial: true) { _, playing in
-            model.liveAudio.set("locked mode", playing)
+        .onChange(of: playing && seen, initial: true) { _, wanted in
+            model.liveAudio.set("locked mode", wanted)
         }
+        // Covered by the screen saver or a sleeping display, nothing here
+        // can be seen, so nothing needs to listen.
+        .background { WindowVisibility { seen = $0 }.frame(width: 0, height: 0) }
         .onDisappear {
             model.liveAudio.set("locked mode", false)
             model.ambientLyricsWanted = false
@@ -182,7 +188,8 @@ struct AmbientSurface: View {
             .animation(.easeOut(duration: 0.5), value: slot.incoming)
         }
         .foregroundStyle(.white)
-        .shadow(color: .black.opacity(0.5), radius: 12)
+        .shadow(color: .black.opacity(model.debugFlags.contains("noshadow") ? 0 : 0.5),
+                radius: model.debugFlags.contains("noshadow") ? 0 : 12)
     }
 
     private func titles(_ title: String, _ artist: String) -> some View {
@@ -212,7 +219,9 @@ struct AmbientSurface: View {
                     .allowsHitTesting(false)
             }
             .overlay { if interactive && hoveringArt && chromeVisible { artControls } }
-            .shadow(color: .black.opacity(0.6), radius: 40, y: 18)
+            .shadow(color: .black.opacity(model.debugFlags.contains("noshadow") ? 0 : 0.6),
+                    radius: model.debugFlags.contains("noshadow") ? 0 : 40,
+                    y: model.debugFlags.contains("noshadow") ? 0 : 18)
             .contentShape(Rectangle())
             .onHover { hoveringArt = $0 }
             .onTapGesture {
@@ -322,7 +331,7 @@ struct AmbientSurface: View {
         }
         return ZStack {
             ForEach(layers, id: \.url) { layer in
-                BlurredArtBackdrop(url: layer.url == "none" ? nil : layer.url)
+                BlurredArtBackdrop(url: layer.url == "none" ? nil : layer.url, moving: playing)
                     .opacity(layer.opacity)
             }
         }

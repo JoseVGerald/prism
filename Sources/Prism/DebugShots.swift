@@ -53,6 +53,30 @@ enum DebugShots {
     static func probe(_ kind: Int) -> String {
         probeLayer?.removeFromSuperlayer()
         probeLayer = nil
+        // 11–13: a 2pt square in the notch panel, behind the notch itself
+        // where nothing can be seen — at the display's rate, 30/s and 10/s.
+        if kind >= 11, let panel = NSApp.windows.first(where: { $0 is FloatingPanel && $0.isVisible }),
+           let host = panel.contentView?.layer {
+            let l = CALayer()
+            l.frame = CGRect(x: host.bounds.midX - 1, y: host.bounds.maxY - 6, width: 2, height: 2)
+            l.backgroundColor = CGColor(gray: 0.5, alpha: 1)
+            if kind == 11 {
+                let a = CABasicAnimation(keyPath: "opacity")
+                a.fromValue = 0.2; a.toValue = 0.6
+                a.duration = 1; a.autoreverses = true; a.repeatCount = .infinity
+                l.add(a, forKey: "probe")
+            } else {
+                let rate = kind == 12 ? 30 : 10
+                let a = CAKeyframeAnimation(keyPath: "opacity")
+                a.values = (0..<(rate * 4)).map { NSNumber(value: 0.2 + 0.4 * Double($0 % rate) / Double(rate)) }
+                a.calculationMode = .discrete
+                a.duration = 4; a.repeatCount = .infinity
+                l.add(a, forKey: "probe")
+            }
+            host.addSublayer(l)
+            probeLayer = l
+            return "probe \(kind) in the notch panel"
+        }
         guard kind > 0, let host = NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 1200 && $0.level.rawValue > 1000 })?
             .contentView?.layer else { return "probe removed" }
         let full = host.bounds

@@ -16,17 +16,27 @@ import QuartzCore
 ///   app nothing once it has been added.
 struct BlurredArtBackdrop: NSViewRepresentable {
     let url: String?
+    /// Whether the wash drifts. Still while nothing plays.
+    var moving = true
 
     func makeNSView(context: Context) -> DriftView { DriftView() }
 
     func updateNSView(_ view: DriftView, context: Context) {
         view.show(url)
+        view.moving = moving
     }
 
     final class DriftView: NSView {
         private let image = CALayer()
         private var shown: String?
         private var loading: Task<Void, Never>?
+        private var timer: Timer?
+        private var occlusion: NSObjectProtocol?
+        /// Where in its 52-second there-and-back the drift has got to.
+        private var drifted = 0.0
+        private var steppedAt: CFTimeInterval = 0
+
+        var moving = true { didSet { if moving != oldValue { retime() } } }
 
         override init(frame: NSRect) {
             super.init(frame: frame)
@@ -35,6 +45,7 @@ struct BlurredArtBackdrop: NSViewRepresentable {
             layer?.masksToBounds = true
             image.contentsGravity = .resizeAspectFill
             image.opacity = 0
+            image.actions = ["transform": NSNull()]
             layer?.addSublayer(image)
         }
 
@@ -45,8 +56,24 @@ struct BlurredArtBackdrop: NSViewRepresentable {
             // Oversized so the drift never reveals an edge.
             CATransaction.begin()
             CATransaction.setDisableActions(true)
+            image.transform = CATransform3DIdentity
             image.frame = bounds.insetBy(dx: -bounds.width * 0.18, dy: -bounds.height * 0.18)
             CATransaction.commit()
+            step(advance: false)
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let occlusion { NotificationCenter.default.removeObserver(occlusion) }
+            occlusion = nil
+            if let window {
+                occlusion = NotificationCenter.default.addObserver(
+                    forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.retime() }
+                }
+            }
+            retime()
         }
 
         func show(_ url: String?) {
@@ -68,24 +95,45 @@ struct BlurredArtBackdrop: NSViewRepresentable {
             image.contents = cg
             image.opacity = cg == nil ? 0 : 1
             image.add(fade, forKey: "fade")
-            startDrift()
+            retime()
         }
 
-        private func startDrift() {
-            guard image.animation(forKey: "drift") == nil else { return }
-            let zoom = CABasicAnimation(keyPath: "transform.scale")
-            zoom.fromValue = 1.0
-            zoom.toValue = 1.12
-            let slide = CABasicAnimation(keyPath: "transform.translation.x")
-            slide.fromValue = -bounds.width * 0.04
-            slide.toValue = bounds.width * 0.04
-            let group = CAAnimationGroup()
-            group.animations = [zoom, slide]
-            group.duration = 26
-            group.autoreverses = true
-            group.repeatCount = .infinity
-            group.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            image.add(group, forKey: "drift")
+        /// The drift is stepped ten times a second rather than run as an
+        /// animation. It moves about a point a second, so the steps cannot
+        /// be seen — but an animation is drawn at the display's rate, and in
+        /// a display-sized window that is sixty frames a second composited
+        /// for a picture that has barely moved. Stopped while nothing plays,
+        /// or with the window covered.
+        private func retime() {
+            let wanted = moving && image.contents != nil
+                && window?.occlusionState.contains(.visible) == true
+            guard wanted else {
+                timer?.invalidate()
+                timer = nil
+                return
+            }
+            guard timer == nil else { return }
+            steppedAt = CACurrentMediaTime()
+            let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.step(advance: true) }
+            }
+            t.tolerance = 0.02
+            RunLoop.main.add(t, forMode: .common)
+            timer = t
+        }
+
+        private func step(advance: Bool) {
+            let now = CACurrentMediaTime()
+            if advance { drifted += min(now - steppedAt, 0.5) }
+            steppedAt = now
+            // Out for 26 seconds and back for 26, easing at each end.
+            let p = drifted.truncatingRemainder(dividingBy: 52) / 26
+            let u = p <= 1 ? p : 2 - p
+            let eased = u * u * (3 - 2 * u)
+            let scale = 1 + 0.12 * eased
+            let slide = (-0.04 + 0.08 * eased) * bounds.width
+            image.transform = CATransform3DTranslate(CATransform3DMakeScale(scale, scale, 1),
+                                                     slide / scale, 0, 0)
         }
     }
 }

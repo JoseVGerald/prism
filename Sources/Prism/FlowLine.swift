@@ -108,6 +108,9 @@ final class FlowHostView: NSView {
         push()
     }
 
+    /// Debug (PRISM_EVAL): pick the settings up again after a switch changed.
+    func debugRefresh() { flow.debugRebuild(); push() }
+
     /// Whether there is audio worth glancing at: the line is moving and
     /// something is playing. The 20 Hz timer used to run for as long as the
     /// view was in a window — paused, hidden behind other apps, all night.
@@ -123,7 +126,7 @@ final class FlowHostView: NSView {
         flow.apply(s)
         let wasListening = listening
         listening = s.animating && s.playing && audio != nil
-        crawling = s.animating && !s.playing
+        crawling = s.animating && (!s.playing || FlowLayer.debugStepped != nil)
         // One last glance, so a line that was following the audio lets go
         // of it when the audio is taken away.
         if wasListening && !listening { flow.hear(audio?.bands) }
@@ -133,15 +136,17 @@ final class FlowHostView: NSView {
             timer = nil
             return
         }
-        guard timer == nil else { return }
-        let t = Timer(timeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
+        let rate = s.playing ? (FlowLayer.debugStepped ?? 20) : 20
+        if let timer, abs(timer.timeInterval - 1 / rate) < 0.0005 { return }
+        timer?.invalidate()
+        let t = Timer(timeInterval: 1 / rate, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 if self.listening { self.flow.hear(self.audio?.bands) }
                 if self.crawling { self.flow.crawl() }
             }
         }
-        t.tolerance = 0.008
+        t.tolerance = 0.1 / rate
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }
@@ -418,14 +423,14 @@ final class FlowLayer: CALayer {
         // about the same however little changed — sixty a second for a
         // light crawling round a paused player, all night, was a fifth of a
         // core of it.
-        crawling = !s.playing
+        crawling = !s.playing || Self.debugStepped != nil
         if crawling {
             (tails + [glowStrand]).forEach { $0.removeAllAnimations() }
             headDot.removeAllAnimations()
             snake.removeAllAnimations()
             let d = max(s.depth, 0.15)
             withoutActions {
-                opacity = 0.4
+                opacity = s.playing ? 1 : 0.4
                 // Where the breath it used to take rests.
                 snake.opacity = Float(0.7 + 0.3 * (1 - d / 2))
                 glowStrand.opacity = Float(0.06 + 0.11 * d)
@@ -488,20 +493,37 @@ final class FlowLayer: CALayer {
     /// Puts the line where a slow lap has got it to by now. Called by the
     /// host twenty times a second while nothing is playing.
     func crawl() {
-        guard crawling, let b = built else { return }
-        place(head: b.head(at: CACurrentMediaTime()))
+        guard crawling, let b = built, let s = settings else { return }
+        let now = CACurrentMediaTime()
+        guard b.surge > 0 else { return place(head: b.head(at: now)) }
+        // Stepped while playing (debug): the tail stretches with the surge
+        // and the body is struck on each beat, as the animation does it.
+        var f = ((now - b.begin) / b.lap).truncatingRemainder(dividingBy: 1)
+        if f < 0 { f += 1 }
+        let tau = (f * Double(Self.beatsPerLap)).truncatingRemainder(dividingBy: 1)
+        place(head: b.head(at: now), stretch: 1 + 0.45 * s.depth * (Self.swell(tau) - 0.375))
+        let d = max(s.depth, 0.15), e = pow(1 - tau, 2.2)
+        withoutActions {
+            snake.opacity = Float(0.7 + 0.3 * ((1 - d) + d * e))
+            glowStrand.opacity = Float(0.06 + 0.22 * d * e)
+        }
     }
 
-    private func place(head: Double) {
+    /// Debug (PRISM_EVAL): step the line this many times a second while
+    /// playing too, instead of running it as an animation.
+    nonisolated(unsafe) static var debugStepped: Double?
+    func debugRebuild() { rebuild() }
+
+    private func place(head: Double, stretch: Double = 1) {
         guard let rim else { return }
         withoutActions {
             let end = (1 + head) / 3
             for (l, strand) in zip(tails, Self.strands) {
                 l.strokeEnd = end
-                l.strokeStart = (1 + head - Self.tailLength * strand.length) / 3
+                l.strokeStart = (1 + head - Self.tailLength * strand.length * stretch) / 3
             }
             glowStrand.strokeEnd = end
-            glowStrand.strokeStart = (1 + head - Self.tailLength * 0.6) / 3
+            glowStrand.strokeStart = (1 + head - Self.tailLength * 0.6 * stretch) / 3
             headDot.position = rim.point(at: head)
         }
     }

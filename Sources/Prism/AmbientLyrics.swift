@@ -42,8 +42,13 @@ struct AmbientLyricsView: View {
     }
 
     private func timed(_ lines: [TimedLine], source: String) -> some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { tl in
-            let time = model.lyricsTime(at: tl.date)
+        // Paused with the music: the words only move with the song, so with
+        // it stopped there is nothing to redraw thirty times a second. A
+        // seek while paused still lands, because the position is read here.
+        let playing = model.engine.player.isPlaying
+        let _ = playing ? 0 : model.engine.player.currentTime
+        return TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !playing)) { tl in
+            let time = model.lyricsTime(at: playing ? tl.date : Date())
             let frame = LyricFrame(lines: lines,
                                    moment: LyricTiming.moment(in: lines, at: time),
                                    time: time, accent: model.palette.accent,

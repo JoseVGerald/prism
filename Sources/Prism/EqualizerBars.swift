@@ -58,7 +58,15 @@ struct EqualizerHost: NSViewRepresentable {
 /// three columns in the notch alone kept the main thread about a sixth busy,
 /// all day, behind every other app.
 final class EqualizerBarsView: NSView {
-    weak var audio: (any AudioBandsSource)?
+    weak var audio: (any AudioBandsSource)? {
+        didSet {
+            guard audio !== oldValue else { return }
+            oldValue?.hold(holder, false)
+            retime()
+        }
+    }
+    /// This equalizer's name, to the audio capture it keeps open.
+    private let holder = "equalizer \(UUID().uuidString)"
 
     private var look: EqualizerLook?
     private var timer: Timer?
@@ -130,6 +138,9 @@ final class EqualizerBarsView: NSView {
     private func retime() {
         let wanted = look?.playing == true && window?.occlusionState.contains(.visible) == true
             && grid != nil
+        // The capture is kept open only while this equalizer is moving for
+        // someone to see — not behind a locked screen, or a covered window.
+        audio?.hold(holder, wanted)
         guard wanted else {
             timer?.invalidate()
             timer = nil

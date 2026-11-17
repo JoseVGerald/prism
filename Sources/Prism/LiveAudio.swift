@@ -5,6 +5,7 @@ import CoreGraphics
 import AVFoundation
 import Accelerate
 import Observation
+import os
 #if canImport(AutoMixCore)
 import AutoMixCore
 #endif
@@ -26,7 +27,26 @@ final class LiveAudio: NSObject, AudioBandsSource {
     /// were, every rim would invalidate its parent thirty times a second —
     /// including RootView, which is the whole app. The light samples it from
     /// inside its own timeline instead, so only the light redraws.
-    @ObservationIgnored private(set) var bands = AudioBands.silent
+    var bands: AudioBands { heard.withLock { $0.bands } }
+
+    /// What the capture last heard, and when. Written straight from the
+    /// audio queue and read by whoever wants it, behind a lock: it used to be
+    /// handed to the main thread first, which was thirty wake-ups a second
+    /// of it for as long as anything was listening — and with the notch's
+    /// equalizer following the music, that is whenever anything plays.
+    private struct Heard: Sendable {
+        var bands = AudioBands.silent
+        var at = Date()
+        /// Which stream may write. A stream that has been let go of can
+        /// still deliver a buffer or two; those are not wanted.
+        var stream = 0
+    }
+    @ObservationIgnored private let heard = OSAllocatedUnfairLock(initialState: Heard())
+
+    /// Forgets what was heard and shuts out the stream that heard it.
+    private func hush() {
+        heard.withLock { $0.bands = .silent; $0.stream += 1 }
+    }
 
     private(set) var running = false
     /// Why capture could not start, for Settings to show.
@@ -76,7 +96,7 @@ final class LiveAudio: NSObject, AudioBandsSource {
     }
 
     /// When the capture last delivered audio.
-    @ObservationIgnored private var lastHeard = Date()
+    private var lastHeard: Date { heard.withLock { $0.at } }
 
     /// The stream is gone — macOS stopped it (display change, sleep, lock), or
     /// it went silent. It used to be left for dead with `running` still true,
@@ -89,7 +109,7 @@ final class LiveAudio: NSObject, AudioBandsSource {
         stream = nil
         output = nil
         running = false
-        bands = .silent
+        hush()
         reconcile()
     }
 
@@ -153,10 +173,17 @@ final class LiveAudio: NSObject, AudioBandsSource {
             config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
             config.showsCursor = false
 
-            let out = CaptureOutput { [weak self] b in
-                Task { @MainActor in
-                    self?.bands = b
-                    self?.lastHeard = Date()
+            let heard = self.heard
+            let mine = heard.withLock { state -> Int in
+                state.stream += 1
+                state.at = Date()
+                return state.stream
+            }
+            let out = CaptureOutput { b in
+                heard.withLock { state in
+                    guard state.stream == mine else { return }
+                    state.bands = b
+                    state.at = Date()
                 }
             } stopped: { [weak self] error in
                 Task { @MainActor in self?.streamDied(error.localizedDescription) }
@@ -169,7 +196,6 @@ final class LiveAudio: NSObject, AudioBandsSource {
             stream = s
             output = out
             running = true
-            lastHeard = Date()
             failure = nil
             log("capture started for \(holders.sorted().joined(separator: ", "))")
         } catch {
@@ -188,7 +214,7 @@ final class LiveAudio: NSObject, AudioBandsSource {
 
     private func stop() async {
         running = false
-        bands = .silent
+        hush()
         guard let s = stream else { return }
         stream = nil
         output = nil
