@@ -474,7 +474,7 @@ struct UntimedLyrics: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.5)) { tl in
-            let d = model.engine.snapshot.duration
+            let d = model.engine.player.duration
             let t = model.lyricsTime(at: tl.date)
             let lines = lyrics.lines.filter { !$0.text.isEmpty }
             let at = d > 0 && !lines.isEmpty ? Int(Double(lines.count) * t / d) : 0

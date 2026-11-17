@@ -23,7 +23,7 @@ struct LyricsToggle: View {
 struct LyricsView: View {
     @Bindable var model: AppModel
 
-    private var snap: EngineSnapshot { model.engine.snapshot }
+    private var snap: PlayerState { model.engine.player }
     /// The line being sung. Set from a light 20 Hz clock below rather than
     /// computed from `displayTime`, which moves once a second and left the
     /// highlight up to a second behind the singer.

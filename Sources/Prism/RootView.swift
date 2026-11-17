@@ -13,7 +13,7 @@ struct RootView: View {
     @Bindable var model: AppModel
 
     private var engine: Engine { model.engine }
-    private var snap: EngineSnapshot { engine.snapshot }
+    private var snap: PlayerState { engine.player }
 
     private var rimHearsMusic: Bool {
         model.ambient.motion == .liveAudio && model.ambient.rimGlow
@@ -52,7 +52,7 @@ struct RootView: View {
                 // equalizer is — an occluded window should paint nothing.
                 if model.ambient.rimGlow && !model.videoMode {
                     AmbientLight(palette: model.palette,
-                                 isPlaying: snap.playback.isPlaying,
+                                 isPlaying: snap.isPlaying,
                                  thickness: model.ambient.thickness,
                                  glow: model.ambient.glow,
                                  corner: 12,
@@ -125,9 +125,6 @@ struct RootView: View {
         .task(id: snap.track?.artworkURL) {
             model.refreshPalette(for: snap.track?.artworkURL)
         }
-        // One funnel for everything that reacts to engine state: the listening
-        // log, the system Now Playing tile, crossfade timing, and lyrics.
-        .onChange(of: snap.currentTime) { _, _ in model.onSnapshot(snap) }
         .background {
             GeometryReader { geo in
                 let si = geo.safeAreaInsets
@@ -147,11 +144,6 @@ struct RootView: View {
             WindowVisibility { model.windowVisible = $0 }.frame(width: 0, height: 0)
         }
         #endif
-        .onChange(of: snap.track?.videoId) { _, _ in
-            model.onSnapshot(snap)
-            model.prefetchTempoIfNeeded()
-        }
-        .onChange(of: snap.hasVideo) { _, has in model.syncVideoMode(hasVideo: has) }
         #if canImport(AppKit)
         // The window's rim holds capture open only while it is actually drawing
         // a live light: Motion on Live audio, rim on, not in video mode, and the
@@ -320,7 +312,7 @@ private struct Sidebar: View {
 
             OutputPicker(model: model)
 
-            if !model.engine.snapshot.signedIn {
+            if !model.engine.player.signedIn {
                 Button {
                     model.engine.beginSignIn()
                 } label: {
@@ -434,7 +426,7 @@ private struct CompactNowPlaying: View {
     @Bindable var model: AppModel
 
     private var engine: Engine { model.engine }
-    private var snap: EngineSnapshot { engine.snapshot }
+    private var snap: PlayerState { engine.player }
     @State private var lastNudge = Date.distantPast
 
     var body: some View {
@@ -448,7 +440,7 @@ private struct CompactNowPlaying: View {
                     if !model.videoMode {
                         HStack(spacing: 26) {
                             EqualizerView(palette: model.palette,
-                                          isPlaying: snap.playback.isPlaying && model.windowVisible,
+                                          isPlaying: snap.isPlaying && model.windowVisible,
                                           audio: model.equalizerAudio, mirrored: true, seed: 0)
                                 .frame(height: art)
                                 .frame(maxWidth: .infinity)
@@ -475,7 +467,7 @@ private struct CompactNowPlaying: View {
                                 .help("Click to exit compact mode")
 
                             EqualizerView(palette: model.palette,
-                                          isPlaying: snap.playback.isPlaying && model.windowVisible,
+                                          isPlaying: snap.isPlaying && model.windowVisible,
                                           audio: model.equalizerAudio, seed: 137)
                                 .frame(height: art)
                                 .frame(maxWidth: .infinity)
@@ -548,7 +540,7 @@ private struct CompactControls: View {
     @Bindable var model: AppModel
 
     private var engine: Engine { model.engine }
-    private var snap: EngineSnapshot { engine.snapshot }
+    private var snap: PlayerState { engine.player }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -558,7 +550,7 @@ private struct CompactControls: View {
                                 kick: .spin, palette: model.palette) { model.shuffleQueue() }
                 GlassIconButton(system: "backward.fill", size: 15, diameter: 36,
                                 kick: .nudge(-5), palette: model.palette) { engine.previous() }
-                GlassIconButton(system: snap.playback.isPlaying ? "pause.fill" : "play.fill",
+                GlassIconButton(system: snap.isPlaying ? "pause.fill" : "play.fill",
                                 size: 19, diameter: 50, prominent: true, palette: model.palette) { engine.togglePlayPause() }
                 GlassIconButton(system: "forward.fill", size: 15, diameter: 36,
                                 kick: .nudge(5), palette: model.palette) { engine.next() }
@@ -570,21 +562,8 @@ private struct CompactControls: View {
             // controls around play; a sixth on the right end drags the play
             // button off centre and the whole panel reads as misaligned.
 
-            HStack(spacing: 10) {
-                Text(timeString(engine.displayTime))
-                    .font(.caption2.monospacedDigit()).foregroundStyle(.white.opacity(0.7))
-                    .frame(width: 42, alignment: .trailing)
-                Scrubber(value: engine.displayTime, total: snap.duration) { t in
-                    engine.scrubOverride = t
-                } onCommit: { t in
-                    engine.seek(to: t)
-                    engine.scrubOverride = nil
-                }
-                .frame(width: 420)
-                Text(timeString(snap.duration))
-                    .font(.caption2.monospacedDigit()).foregroundStyle(.white.opacity(0.7))
-                    .frame(width: 42, alignment: .leading)
-            }
+            PlaybackScrubber(engine: engine, spacing: 10, labelWidth: 42, scrubberWidth: 420,
+                             labels: AnyShapeStyle(.white.opacity(0.7)))
         }
         .padding(.horizontal, 22).padding(.vertical, 16)
         .glassEffect(.regular, in: .rect(cornerRadius: 24))

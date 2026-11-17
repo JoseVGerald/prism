@@ -161,6 +161,13 @@ final class AppModel {
         quality = QualitySettings(engine: engine)
         nowPlaying = NowPlaying(engine: engine)
         engine.onDocumentReady = { [quality] in quality.applyToEngine() }
+        // Everything that follows playback hangs off the engine itself, so it
+        // runs whether or not a window is there to be redrawn.
+        engine.onProgress = { [weak self] snap, songChanged in
+            self?.onSnapshot(snap)
+            if songChanged { self?.prefetchTempoIfNeeded() }
+        }
+        engine.onHasVideo = { [weak self] has in self?.syncVideoMode(hasVideo: has) }
         #if canImport(AppKit)
         notch = NotchController(model: self)
         // Next turn, not now: this init runs inside SwiftUI's first graph
@@ -394,15 +401,10 @@ final class AppModel {
         didSet { if ambientLyricsWanted { ensureLyrics(); prefetchNextLyrics() } }
     }
 
-    func ensureLyrics() { loadLyrics(for: engine.snapshot.track) }
+    func ensureLyrics() { loadLyrics(for: engine.player.track) }
 
     /// The queue entry that plays after this one, if there is one.
-    var nextEntry: QueueEntry? {
-        let s = engine.snapshot
-        let i = s.queueIndex + 1
-        guard i > 0, i < s.queue.count else { return nil }
-        return s.queue[i]
-    }
+    var nextEntry: QueueEntry? { engine.player.nextEntry }
 
     /// The next track's colours, so a transition can hand the light from one
     /// song to the other. Cached per artwork like the current palette.
@@ -459,7 +461,7 @@ final class AppModel {
     func toggleLyrics() {
         lyricsMode.toggle()
         if lyricsMode {
-            loadLyrics(for: engine.snapshot.track)
+            loadLyrics(for: engine.player.track)
         } else {
             flash("Cover art")
         }
@@ -505,7 +507,7 @@ final class AppModel {
     private var historyLoadedAt: Date?
 
     func loadYouTubeHistory(force: Bool = false) {
-        guard engine.snapshot.ready, engine.snapshot.signedIn else { return }
+        guard engine.player.ready, engine.player.signedIn else { return }
         if !force, let at = historyLoadedAt, Date().timeIntervalSince(at) < 45 { return }
         historyLoadedAt = Date()
         Task {
@@ -555,7 +557,7 @@ final class AppModel {
     private var playlistsLoadedAt: Date?
 
     func loadMyPlaylists(force: Bool = false) {
-        guard engine.snapshot.ready, engine.snapshot.signedIn else { return }
+        guard engine.player.ready, engine.player.signedIn else { return }
         if !force, let at = playlistsLoadedAt, Date().timeIntervalSince(at) < 120 { return }
         playlistsLoadedAt = Date()
         Task {
@@ -603,7 +605,7 @@ final class AppModel {
     func makePlaylist(from tracks: [Track], named name: String) {
         guard !tracks.isEmpty else { flash("Nothing to put in a playlist yet"); return }
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Prism playlist" : name
-        guard engine.snapshot.signedIn else {
+        guard engine.player.signedIn else {
             playTogether(tracks)
             flash("Sign in to save playlists — playing the \(tracks.count) songs instead")
             return
@@ -652,7 +654,7 @@ final class AppModel {
     private var historySeenFor: String?
 
     func loadHome(force: Bool = false) {
-        guard engine.snapshot.ready, !homeLoading else { return }
+        guard engine.player.ready, !homeLoading else { return }
         if !force, let at = homeLoadedAt, Date().timeIntervalSince(at) < 600, !home.isEmpty { return }
         // A failed load is retried, but not on every snapshot.
         if !force, home.isEmpty, let tried = homeTriedAt, Date().timeIntervalSince(tried) < 60 { return }
@@ -728,6 +730,68 @@ final class AppModel {
                                      + " | default " + (self.audio.current?.name ?? "joined/none"))
                         #endif
                     case "settings": self.showSettings.toggle()
+                    case "benchTicks":
+                        #if canImport(AppKit)
+                        self.evalLog("app.log", "bench ticks \(DebugShots.benchTicks)")
+                        #endif
+                    case "rimBench":
+                        #if canImport(AppKit)
+                        self.evalLog("app.log", DebugShots.rimBench(parts.count > 1 ? Int(parts[1]) ?? 0 : 0,
+                                                                    palette: self.palette))
+                        #endif
+                    case "probe":
+                        #if canImport(AppKit)
+                        self.evalLog("app.log", DebugShots.probe(parts.count > 1 ? Int(parts[1]) ?? 0 : 0))
+                        #endif
+                    case "flowdebug":
+                        #if canImport(AppKit)
+                        let n = parts.count > 1 ? Int(parts[1]) ?? 14 : 14
+                        func walkFlow(_ v: NSView) {
+                            (v as? FlowHostView)?.flow.debugShow(strands: n)
+                            v.subviews.forEach(walkFlow)
+                        }
+                        NSApp.windows.compactMap(\.contentView).forEach(walkFlow)
+                        #endif
+                    case "rimdebug":
+                        #if canImport(AppKit)
+                        RimLayer.debugMode = parts.count > 1 ? Int(parts[1]) ?? 0 : 0
+                        func walk(_ v: NSView) {
+                            (v as? RimHostView)?.rim.debugRefresh()
+                            v.subviews.forEach(walk)
+                        }
+                        NSApp.windows.compactMap(\.contentView).forEach(walk)
+                        self.evalLog("app.log", "rim debug \(RimLayer.debugMode)")
+                        #endif
+                    case "ambient":
+                        #if canImport(AppKit)
+                        self.toggleAmbient()
+                        #endif
+                    case "windows":
+                        #if canImport(AppKit)
+                        self.evalLog("app.log", "equalizer ticks \(EqualizerBarsView.debugTicks) moves \(EqualizerBarsView.debugMoves) "
+                            + "playing \(self.engine.player.isPlaying) hear \(self.ambient.equalizersHear) capture \(self.liveAudio.running)")
+                        var rims: [String] = []
+                        func walkRim(_ v: NSView) {
+                            if let r = v as? RimHostView { rims.append(r.rim.debugState) }
+                            v.subviews.forEach(walkRim)
+                        }
+                        NSApp.windows.compactMap(\.contentView).forEach(walkRim)
+                        rims.forEach { self.evalLog("app.log", $0) }
+                        for w in NSApp.windows {
+                            self.evalLog("app.log", "window \(type(of: w)) \(Int(w.frame.width))x\(Int(w.frame.height)) "
+                                + "visible \(w.isVisible) occlusionVisible \(w.occlusionState.contains(.visible)) "
+                                + "level \(w.level.rawValue) onActiveSpace \(w.isOnActiveSpace)")
+                        }
+                        #endif
+                    case "eqShot":
+                        #if canImport(AppKit)
+                        let out = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".prism-eval/eq.png")
+                        self.evalLog("app.log", DebugShots.equalizer(self.palette, to: out))
+                        #endif
+                    case "hear":
+                        // Flip "Follow the music", to see the decorative motion.
+                        self.ambient.equalizersHear.toggle()
+                        self.evalLog("app.log", "equalizers hear: \(self.ambient.equalizersHear)")
                     case "scrollTest":
                         #if canImport(AppKit)
                         let options = parts.count > 1 ? parts[1] : ""
@@ -883,7 +947,7 @@ final class AppModel {
     /// measured, and `syncVideoMode` would otherwise see the old ATV type and
     /// pull us straight back out, so the mode is set after the switch lands.
     func setAVMode(video: Bool) {
-        guard engine.snapshot.hasCounterpart else { return }
+        guard engine.player.hasCounterpart else { return }
         engine.setAVMode(video: video)
         flash(video ? "Switching to the music video" : "Switching to the song")
 
@@ -892,7 +956,7 @@ final class AppModel {
             for _ in 0..<40 {
                 try? await Task.sleep(for: .milliseconds(250))
                 if Task.isCancelled { return }
-                guard engine.snapshot.hasVideo == video else { continue }
+                guard engine.player.hasVideo == video else { continue }
                 if video {
                     guard !videoMode else { return }
                     toggleVideoMode()
@@ -970,7 +1034,7 @@ final class AppModel {
             for _ in 0..<3 {
                 try? await Task.sleep(for: .milliseconds(700))
                 guard videoMode, !Task.isCancelled else { return }
-                guard let r = engine.snapshot.videoRect, r.w > 40, r.h > 40,
+                guard let r = engine.player.videoRect, r.w > 40, r.h > 40,
                       r.vw > 1, r.vh > 1 else { continue }
 
                 let sx = place.width / r.vw, sy = place.height / r.vh
@@ -1000,7 +1064,7 @@ final class AppModel {
         for _ in 0..<40 {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled, videoMode else { return nil }
-            guard let r = engine.snapshot.videoRect, r.w > 40, r.h > 40 else { continue }
+            guard let r = engine.player.videoRect, r.w > 40, r.h > 40 else { continue }
             if let p = previous,
                abs(p.x - r.x) < 6, abs(p.y - r.y) < 6,
                abs(p.w - r.w) < 6, abs(p.h - r.h) < 6 {
@@ -1186,7 +1250,7 @@ final class AppModel {
                 library = sections
                 libraryLoaded = true
                 if library.isEmpty {
-                    status = engine.snapshot.signedIn
+                    status = engine.player.signedIn
                         ? "Your library came back empty."
                         : "Sign in to see your library."
                 }
@@ -1238,7 +1302,7 @@ final class AppModel {
                                 : "Playing next: \(track.title)")
                 } else if r.hijackedPlayback {
                     flash("YouTube started “\(track.title)” instead of queuing it.")
-                } else if !engine.snapshot.signedIn {
+                } else if !engine.player.signedIn {
                     flash("Sign in to add songs to the queue.")
                 } else {
                     flash("Couldn't queue “\(track.title)”.")
@@ -1256,13 +1320,13 @@ final class AppModel {
     // YouTube methods that match on item objects, so nothing was ever found.
 
     func moveInQueue(from: Int, to: Int) {
-        let queue = engine.snapshot.queue
+        let queue = engine.player.queue
         guard from >= 0, from < queue.count, to >= 0, to < queue.count, from != to else { return }
         let title = queue[from].title
         engine.moveInQueue(from: from, to: to)
         Task {
             try? await Task.sleep(for: .milliseconds(450))
-            let now = engine.snapshot.queue
+            let now = engine.player.queue
             if to < now.count, now[to].videoId == queue[from].videoId {
                 flash("Moved \(title) to #\(to + 1)")
             } else {
@@ -1272,11 +1336,11 @@ final class AppModel {
     }
 
     func removeFromQueue(_ entry: QueueEntry) {
-        let before = engine.snapshot.queue.count
+        let before = engine.player.queue.count
         engine.removeFromQueue(at: entry.index)
         Task {
             try? await Task.sleep(for: .milliseconds(450))
-            flash(engine.snapshot.queue.count < before
+            flash(engine.player.queue.count < before
                   ? "Removed \(entry.title)"
                   : "Couldn't remove \(entry.title).")
         }
@@ -1293,25 +1357,25 @@ final class AppModel {
         for row in rows { engine.removeFromQueue(at: row.index) }
         Task {
             try? await Task.sleep(for: .milliseconds(450))
-            let gone = before - engine.snapshot.queue.count
+            let gone = before - engine.player.queue.count
             flash(gone > 0 ? "Removed \(gone) songs from the queue" : "Couldn't remove those songs.")
         }
     }
 
     func clearQueue() {
-        let before = engine.snapshot.queue.count
+        let before = engine.player.queue.count
         guard before > 1 else { return }
         engine.clearQueue()
         Task {
             try? await Task.sleep(for: .milliseconds(450))
-            let after = engine.snapshot.queue.count
+            let after = engine.player.queue.count
             flash(after < before ? "Cleared \(before - after) from the queue"
                                  : "Couldn't clear the queue.")
         }
     }
 
     func undoQueueEdit() {
-        guard let label = engine.snapshot.undoLabel else { return }
+        guard let label = engine.player.undoLabel else { return }
         engine.undoQueue()
         flash("Undid \(label)")
     }
@@ -1336,7 +1400,7 @@ final class AppModel {
     /// The looked-up tempo whatever the motion setting — the flowing line's
     /// pace when the audio itself is not being heard.
     var trackTempo: Double? {
-        guard let id = engine.snapshot.track?.videoId,
+        guard let id = engine.currentVideoId,
               let bpm = transitions.analysis.cached(id)?.bpm, bpm > 30
         else { return nil }
         return 60 / bpm
@@ -1347,10 +1411,10 @@ final class AppModel {
     /// crossfade to arm.
     func prefetchTempoIfNeeded() {
         guard ambient.motion == .beat || (ambient.rimGlow && ambient.flow),
-              let t = engine.snapshot.track else { return }
+              let t = engine.player.track else { return }
         transitions.analysis.prefetch(videoId: t.videoId, title: t.title,
                                       artist: t.artist,
-                                      duration: engine.snapshot.duration)
+                                      duration: engine.player.duration)
     }
 
     #if canImport(AppKit)
@@ -1371,7 +1435,7 @@ final class AppModel {
                 try? await Task.sleep(for: .seconds(5))
                 guard let self else { return }
                 guard !ambient.presenting,
-                      engine.snapshot.playback.isPlaying,
+                      engine.player.isPlaying,
                       ambient.idleSeconds > 0 else { continue }
                 let idle = CGEventSource.secondsSinceLastEventType(
                     .combinedSessionState, eventType: .init(rawValue: ~0)!)
@@ -1387,7 +1451,7 @@ final class AppModel {
 
     func nudgeVolume(by delta: Double) {
         let fresh = volumeHUDAt.map { Date().timeIntervalSince($0) < 1.5 } ?? false
-        let base = fresh ? volumeHUDLevel : engine.snapshot.volume
+        let base = fresh ? volumeHUDLevel : engine.player.volume
         volumeHUDLevel = min(max(base + delta, 0), 100)
         engine.setVolume(volumeHUDLevel)
         volumeHUDAt = Date()

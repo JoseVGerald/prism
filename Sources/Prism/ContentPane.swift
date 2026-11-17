@@ -44,7 +44,7 @@ struct ContentPane: View {
 struct AVToggle: View {
     @Bindable var model: AppModel
 
-    private var showingVideo: Bool { model.engine.snapshot.showingVideoSide }
+    private var showingVideo: Bool { model.engine.player.showingVideoSide }
 
     /// Lets the selected pill travel between the two sides rather than fading
     /// out of one and into the other, so the control reads as one moving part.
@@ -103,10 +103,10 @@ struct VideoToggle: View {
 
 private struct NowPlayingPane: View {
     @Bindable var model: AppModel
-    private var track: Track? { model.engine.snapshot.track }
-    private var playing: Bool { model.engine.snapshot.playback.isPlaying }
+    private var track: Track? { model.engine.player.track }
+    private var playing: Bool { model.engine.player.isPlaying }
 
-    private var snap: EngineSnapshot { model.engine.snapshot }
+    private var snap: PlayerState { model.engine.player }
 
     /// The equalizer is the most expensive thing Prism draws, and a window
     /// nobody can see is the cheapest place to stop drawing it.

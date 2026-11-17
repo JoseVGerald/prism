@@ -13,6 +13,9 @@ final class NowPlaying {
     private var artworkURL: String?
     private var artworkTask: Task<Void, Never>?
     private var artwork: MPMediaItemArtwork?
+    /// What the system was last told, and when.
+    private var published: (track: Track, duration: Double, playing: Bool, hasArtwork: Bool,
+                            elapsed: Double, at: Date)?
 
     init(engine: Engine) {
         self.engine = engine
@@ -47,11 +50,11 @@ final class NowPlaying {
         c.skipBackwardCommand.preferredIntervals = [15]
         c.skipForwardCommand.addTarget { [weak self] _ in
             guard let e = self?.engine else { return .commandFailed }
-            e.seek(to: e.snapshot.currentTime + 15); return .success
+            e.seek(to: e.smoothTime() + 15); return .success
         }
         c.skipBackwardCommand.addTarget { [weak self] _ in
             guard let e = self?.engine else { return .commandFailed }
-            e.seek(to: max(e.snapshot.currentTime - 15, 0)); return .success
+            e.seek(to: max(e.smoothTime() - 15, 0)); return .success
         }
 
         for cmd in [c.playCommand, c.pauseCommand, c.togglePlayPauseCommand,
@@ -73,10 +76,35 @@ final class NowPlaying {
         let center = MPNowPlayingInfoCenter.default()
 
         guard let track = snap.track else {
-            center.nowPlayingInfo = nil
-            center.playbackState = .stopped
+            if published != nil {
+                center.nowPlayingInfo = nil
+                center.playbackState = .stopped
+                published = nil
+            }
             return
         }
+
+        // Told once, the system runs the clock itself from the rate. This was
+        // republished on every snapshot — the whole dictionary, artwork and
+        // all, across to the media daemon once a second, and every Now
+        // Playing surface redrawn for it — to say what it already knew.
+        // Now only when something it could not have guessed changes: the
+        // song, play or pause, the artwork arriving, or the position not
+        // being where the clock would have put it (a seek, a stall). And
+        // every five seconds regardless, because the web player publishes a
+        // tile of its own and the last one in wins.
+        let playing = snap.playback.isPlaying
+        let now = Date()
+        if let p = published, p.track == track, p.duration == snap.duration,
+           p.playing == playing, p.hasArtwork == (artwork != nil),
+           now.timeIntervalSince(p.at) < 5 {
+            let expected = p.elapsed + (playing ? now.timeIntervalSince(p.at) : 0)
+            if abs(snap.currentTime - expected) < 1.5 {
+                loadArtwork(track.artworkURL)
+                return
+            }
+        }
+        published = (track, snap.duration, playing, artwork != nil, snap.currentTime, now)
 
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: track.title,

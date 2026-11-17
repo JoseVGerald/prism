@@ -21,14 +21,15 @@ struct AmbientSurface: View {
     @State private var showingLyrics = false
     @State private var hoveringArt = false
     @State private var chromeVisible = true
+    @State private var volumeShown = false
     @State private var idleTask: Task<Void, Never>?
     @State private var handover = AmbientTransition.Handover()
     /// This song's style when the setting is Random, picked as the song starts.
     @State private var randomStyle: AmbientSettings.LyricStyle = .prism
 
-    private var snap: EngineSnapshot { model.engine.snapshot }
+    private var snap: PlayerState { model.engine.player }
     private var track: Track? { snap.track }
-    private var playing: Bool { snap.playback.isPlaying }
+    private var playing: Bool { snap.isPlaying }
 
     /// Whether a hand-over could be drawn at all right now. The root timeline
     /// only needs to tick near the end of a song; the rest of the time it is
@@ -80,11 +81,13 @@ struct AmbientSurface: View {
         .onContinuousHover { phase in
             if case .active = phase { wake() }
         }
-        .onAppear {
-            // Locked mode always reacts to the music; the capture is held for
-            // exactly as long as this surface is up.
-            model.liveAudio.set("locked mode", true)
-            wake()
+        .onAppear { wake() }
+        // Locked mode always reacts to the music; the capture is held while
+        // this surface is up and something is playing. It used to be held
+        // paused too — hours of the system's screen-capture machinery
+        // listening to silence while the Mac sat idle.
+        .onChange(of: playing, initial: true) { _, playing in
+            model.liveAudio.set("locked mode", playing)
         }
         .onDisappear {
             model.liveAudio.set("locked mode", false)
@@ -342,7 +345,9 @@ struct AmbientSurface: View {
     }
 
     private var clock: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { tl in
+        // On the minute, which is when the clock changes. It was every
+        // second: sixty redraws of this surface for each one that showed.
+        TimelineView(.everyMinute) { tl in
             VStack(spacing: 2) {
                 Text(tl.date, format: .dateTime.hour().minute())
                     .font(.system(size: showingLyrics ? 30 : 64, weight: .thin))
@@ -369,24 +374,34 @@ struct AmbientSurface: View {
             .allowsHitTesting(false)
     }
 
+    /// Shown by a scroll, and hidden again 1.2s after the last one. It used
+    /// to ask the clock ten times a second whether that had passed yet — for
+    /// as long as the surface was up, whether or not anyone had ever scrolled
+    /// — and each ask re-laid-out the whole display-sized surface.
     private var volumeHUD: some View {
-        TimelineView(.periodic(from: .now, by: 0.1)) { tl in
-            let shown = model.volumeHUDAt.map { tl.date.timeIntervalSince($0) < 1.2 } ?? false
-            HStack(spacing: 12) {
-                Image(systemName: model.volumeHUDLevel == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                Capsule().fill(.white.opacity(0.2))
-                    .frame(width: 180, height: 5)
-                    .overlay(alignment: .leading) {
-                        Capsule().fill(.white).frame(width: 180 * model.volumeHUDLevel / 100, height: 5)
-                    }
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 20).padding(.vertical, 14)
-            .background(Capsule().fill(.black.opacity(0.55)))
-            .opacity(shown ? 1 : 0)
-            .animation(.easeOut(duration: 0.25), value: shown)
+        HStack(spacing: 12) {
+            Image(systemName: model.volumeHUDLevel == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+            Capsule().fill(.white.opacity(0.2))
+                .frame(width: 180, height: 5)
+                .overlay(alignment: .leading) {
+                    Capsule().fill(.white).frame(width: 180 * model.volumeHUDLevel / 100, height: 5)
+                }
         }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 20).padding(.vertical, 14)
+        .background(Capsule().fill(.black.opacity(0.55)))
+        .opacity(volumeShown ? 1 : 0)
+        .animation(.easeOut(duration: 0.25), value: volumeShown)
         .allowsHitTesting(false)
+        .task(id: model.volumeHUDAt) {
+            guard let at = model.volumeHUDAt, Date().timeIntervalSince(at) < 1.2 else {
+                volumeShown = false
+                return
+            }
+            volumeShown = true
+            try? await Task.sleep(for: .seconds(1.2))
+            if !Task.isCancelled { volumeShown = false }
+        }
     }
 }
 #endif

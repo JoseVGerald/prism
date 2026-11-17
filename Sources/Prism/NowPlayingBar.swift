@@ -4,7 +4,7 @@ struct NowPlayingBar: View {
     @Bindable var model: AppModel
 
     private var engine: Engine { model.engine }
-    private var snap: EngineSnapshot { engine.snapshot }
+    private var snap: PlayerState { engine.player }
     private var track: Track? { snap.track }
 
     @State private var volume: Double = 100
@@ -61,7 +61,7 @@ struct NowPlayingBar: View {
                                     kick: .nudge(-5), palette: model.palette) {
                         engine.previous()
                     }
-                    GlassIconButton(system: snap.playback.isPlaying ? "pause.fill" : "play.fill",
+                    GlassIconButton(system: snap.isPlaying ? "pause.fill" : "play.fill",
                                     size: 17, diameter: 44, prominent: true, palette: model.palette) {
                         engine.togglePlayPause()
                     }
@@ -74,20 +74,7 @@ struct NowPlayingBar: View {
                         .help("Repeat: \(snap.repeatMode?.capitalized ?? "none")")
                 }
 
-                HStack(spacing: 9) {
-                    Text(timeString(engine.displayTime))
-                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                    Scrubber(value: engine.displayTime, total: snap.duration) { t in
-                        engine.scrubOverride = t
-                    } onCommit: { t in
-                        engine.seek(to: t)
-                        engine.scrubOverride = nil
-                    }
-                    Text(timeString(snap.duration))
-                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .leading)
-            }
+                PlaybackScrubber(engine: engine)
         }
     }
 
@@ -128,5 +115,37 @@ struct NowPlayingBar: View {
         if volume < 33 { return "speaker.wave.1.fill" }
         if volume < 66 { return "speaker.wave.2.fill" }
         return "speaker.wave.3.fill"
+    }
+}
+
+/// Elapsed time, the scrubber, and the song's length.
+///
+/// Its own view because it is the one part of a transport that changes every
+/// second. Inside the bar's body, each tick of the clock re-evaluated the
+/// whole bar — five glass buttons, the artwork, the volume slider — to move
+/// one number.
+struct PlaybackScrubber: View {
+    let engine: Engine
+    var spacing: CGFloat = 9
+    var labelWidth: CGFloat = 40
+    var scrubberWidth: CGFloat? = nil
+    var labels: AnyShapeStyle = AnyShapeStyle(.secondary)
+
+    var body: some View {
+        HStack(spacing: spacing) {
+            Text(timeString(engine.displayTime))
+                .font(.caption2.monospacedDigit()).foregroundStyle(labels)
+                .frame(width: labelWidth, alignment: .trailing)
+            Scrubber(value: engine.displayTime, total: engine.player.duration) { t in
+                engine.scrubOverride = t
+            } onCommit: { t in
+                engine.seek(to: t)
+                engine.scrubOverride = nil
+            }
+            .frame(width: scrubberWidth)
+            Text(timeString(engine.player.duration))
+                .font(.caption2.monospacedDigit()).foregroundStyle(labels)
+                .frame(width: labelWidth, alignment: .leading)
+        }
     }
 }

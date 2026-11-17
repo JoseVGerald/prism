@@ -232,6 +232,22 @@ private struct NotchControl: View {
     }
 }
 
+/// The island's hairline of progress — its own view, so the second ticking
+/// over moves the line and leaves the rest of the island alone.
+private struct NotchProgress: View {
+    let player: PlayerState
+
+    var body: some View {
+        let fraction = player.duration > 0
+            ? min(max(player.currentTime / player.duration, 0), 1) : 0
+        Capsule().fill(.white.opacity(0.16))
+            .overlay(alignment: .leading) {
+                Capsule().fill(.white.opacity(0.85))
+                    .scaleEffect(x: fraction, anchor: .leading)
+            }
+    }
+}
+
 struct NotchIslandView: View {
     static let width: CGFloat = 420
     static let height: CGFloat = 300
@@ -250,7 +266,7 @@ struct NotchIslandView: View {
     private enum Face { case player, utility }
     private var face: Face { showUtility ? .utility : .player }
 
-    private var snap: EngineSnapshot { model.engine.snapshot }
+    private var snap: PlayerState { model.engine.player }
     /// Only alive when there is a track. With nothing loaded the notch behaves
     /// exactly like stock macOS.
     private var live: Bool { snap.track != nil }
@@ -322,7 +338,7 @@ struct NotchIslandView: View {
             Group {
                 if live {
                     EqualizerView(palette: model.palette,
-                                  isPlaying: snap.playback.isPlaying,
+                                  isPlaying: snap.isPlaying,
                                   audio: model.equalizerAudio,
                                   seed: 3, maxBlocks: 3, block: 2, gap: 2, fps: 10)
                         .frame(width: 26, height: notch.height - 8)
@@ -367,7 +383,7 @@ struct NotchIslandView: View {
             Color.clear.frame(height: notch.height + 14)
 
             HStack(spacing: 14) {
-                EqualizerView(palette: model.palette, isPlaying: snap.playback.isPlaying,
+                EqualizerView(palette: model.palette, isPlaying: snap.isPlaying,
                               audio: model.equalizerAudio, mirrored: true,
                               seed: 0, maxBlocks: 5, block: 4, gap: 3, fps: 12)
                     .frame(width: 96, height: 92)
@@ -376,7 +392,7 @@ struct NotchIslandView: View {
                     .frame(width: 92, height: 92)
                     .shadow(color: .black.opacity(0.5), radius: 10, y: 3)
 
-                EqualizerView(palette: model.palette, isPlaying: snap.playback.isPlaying,
+                EqualizerView(palette: model.palette, isPlaying: snap.isPlaying,
                               audio: model.equalizerAudio,
                               seed: 7, maxBlocks: 5, block: 4, gap: 3, fps: 12)
                     .frame(width: 96, height: 92)
@@ -387,7 +403,7 @@ struct NotchIslandView: View {
                     model.shuffleQueue()
                 }
                 control("backward.fill", size: 15, kick: .nudge(-4)) { model.engine.previous() }
-                control(snap.playback.isPlaying ? "pause.fill" : "play.fill", size: 18) {
+                control(snap.isPlaying ? "pause.fill" : "play.fill", size: 18) {
                     model.engine.togglePlayPause()
                 }
                 control("forward.fill", size: 15, kick: .nudge(4)) { model.engine.next() }
@@ -429,20 +445,9 @@ struct NotchIslandView: View {
     /// A hairline of progress. The island is too small for a scrubber, but with
     /// nothing at all you cannot tell how far into a track you are.
     private var progress: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(.white.opacity(0.16))
-                Capsule().fill(.white.opacity(0.85))
-                    .frame(width: geo.size.width * fraction)
-            }
-        }
-        .frame(height: 2.5)
-        .padding(.horizontal, 6)
-    }
-
-    private var fraction: CGFloat {
-        guard snap.duration > 0 else { return 0 }
-        return min(max(snap.currentTime / snap.duration, 0), 1)
+        NotchProgress(player: model.engine.player)
+            .frame(height: 2.5)
+            .padding(.horizontal, 6)
     }
 
     @ViewBuilder

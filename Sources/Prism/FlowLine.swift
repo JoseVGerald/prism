@@ -62,14 +62,19 @@ private struct FlowLineHost: NSViewRepresentable {
     func makeNSView(context: Context) -> FlowHostView { FlowHostView() }
     func updateNSView(_ view: FlowHostView, context: Context) {
         view.audio = audio
-        view.flow.apply(settings)
+        view.settings = settings
     }
 }
 
 final class FlowHostView: NSView {
     let flow = FlowLayer()
-    weak var audio: (any AudioBandsSource)?
+    weak var audio: (any AudioBandsSource)? { didSet { if audio !== oldValue { push() } } }
     private var timer: Timer?
+    private var occlusion: NSObjectProtocol?
+
+    /// As asked for. What the layer is given also knows whether the window
+    /// can be seen at all.
+    var settings: FlowSettings? { didSet { push() } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -89,15 +94,56 @@ final class FlowHostView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        timer?.invalidate()
-        timer = nil
-        guard window != nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.flow.hear(self.audio?.bands)
+        if let occlusion { NotificationCenter.default.removeObserver(occlusion) }
+        occlusion = nil
+        if let window {
+            // Behind another window, a screen saver or a sleeping display,
+            // the line is not drawn — so it is not moved either.
+            occlusion = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.push() }
             }
         }
+        push()
+    }
+
+    /// Whether there is audio worth glancing at: the line is moving and
+    /// something is playing. The 20 Hz timer used to run for as long as the
+    /// view was in a window — paused, hidden behind other apps, all night.
+    private var listening = false
+    /// Nothing playing: the line is walked round by the timer (see
+    /// `FlowLayer.crawl`), not by a running animation.
+    private var crawling = false
+
+    private func push() {
+        guard var s = settings else { return }
+        let seen = window?.occlusionState.contains(.visible) == true
+        s.animating = s.animating && seen
+        flow.apply(s)
+        let wasListening = listening
+        listening = s.animating && s.playing && audio != nil
+        crawling = s.animating && !s.playing
+        // One last glance, so a line that was following the audio lets go
+        // of it when the audio is taken away.
+        if wasListening && !listening { flow.hear(audio?.bands) }
+
+        guard listening || crawling else {
+            timer?.invalidate()
+            timer = nil
+            return
+        }
+        guard timer == nil else { return }
+        let t = Timer(timeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.listening { self.flow.hear(self.audio?.bands) }
+                if self.crawling { self.flow.crawl() }
+            }
+        }
+        t.tolerance = 0.008
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
     }
 }
 #else
@@ -152,6 +198,7 @@ final class FlowLayer: CALayer {
     private var heard: (period: Double, anchor: CFTimeInterval)?
     private var lastOnset: Date?
     private var built: Built?
+    private var crawling = false
 
     /// (length as a share of the whole body, width × thickness, whiteness),
     /// longest and thinnest first. Fourteen small steps rather than seven big
@@ -207,6 +254,23 @@ final class FlowLayer: CALayer {
     }
     override init(layer: Any) { super.init(layer: layer) }
     required init?(coder: NSCoder) { fatalError() }
+
+    /// Debug (PRISM_EVAL): show only the first `n` strands. 100 and 101
+    /// turn group opacity off and on.
+    func debugShow(strands n: Int) {
+        if n >= 100 {
+            withoutActions {
+                allowsGroupOpacity = n == 101
+                snake.allowsGroupOpacity = n == 101
+            }
+            return
+        }
+        withoutActions {
+            for (i, l) in tails.enumerated() { l.isHidden = i >= n }
+            glowStrand.isHidden = n < 0
+            headDot.isHidden = n < 0
+        }
+    }
 
     // MARK: Inputs
 
@@ -307,13 +371,18 @@ final class FlowLayer: CALayer {
         guard let s = settings, let rim else { return }
         let now = CACurrentMediaTime()
         guard s.animating else {
+            crawling = false
             // Hold the head where it is; the next build carries on from there.
+            let head = built?.head(at: now) ?? 0
             if let b = built {
-                built = Built(start: b.head(at: now), begin: now, lap: b.lap, surge: 0)
+                built = Built(start: head, begin: now, lap: b.lap, surge: 0)
             }
             (tails + [glowStrand]).forEach { $0.removeAllAnimations() }
             headDot.removeAllAnimations()
             snake.removeAllAnimations()
+            // Left where it was, not at the strokes' own defaults — which
+            // are the whole rim, every strand of it at once.
+            place(head: head)
             return
         }
         let looked: (period: Double, anchor: CFTimeInterval)? =
@@ -341,6 +410,30 @@ final class FlowLayer: CALayer {
         // Whole laps earlier: the same motion from now on.
         begin -= 2 * lap
         built = Built(start: start, begin: begin, lap: lap, surge: surge)
+
+        // Nothing playing: the same slow lap, but walked round twenty times
+        // a second by the host's timer rather than run as an animation. The
+        // render server runs an animation at the display's rate, and in a
+        // display-sized window every changed frame costs the window server
+        // about the same however little changed — sixty a second for a
+        // light crawling round a paused player, all night, was a fifth of a
+        // core of it.
+        crawling = !s.playing
+        if crawling {
+            (tails + [glowStrand]).forEach { $0.removeAllAnimations() }
+            headDot.removeAllAnimations()
+            snake.removeAllAnimations()
+            let d = max(s.depth, 0.15)
+            withoutActions {
+                opacity = 0.4
+                // Where the breath it used to take rests.
+                snake.opacity = Float(0.7 + 0.3 * (1 - d / 2))
+                glowStrand.opacity = Float(0.06 + 0.11 * d)
+            }
+            crawl()
+            return
+        }
+        withoutActions { snake.opacity = 1; glowStrand.opacity = 0.1 }
 
         // One lap of keyframes, evenly spaced in time: where the head is, and
         // how long the tail is — it stretches with the surge, like a streak.
@@ -390,6 +483,27 @@ final class FlowLayer: CALayer {
         let pulse = pulseAnimations(beat: folded?.period, depth: s.depth, begin: beginLocal)
         snake.add(pulse.body, forKey: "pulse")
         glowStrand.add(pulse.glow, forKey: "pulse")
+    }
+
+    /// Puts the line where a slow lap has got it to by now. Called by the
+    /// host twenty times a second while nothing is playing.
+    func crawl() {
+        guard crawling, let b = built else { return }
+        place(head: b.head(at: CACurrentMediaTime()))
+    }
+
+    private func place(head: Double) {
+        guard let rim else { return }
+        withoutActions {
+            let end = (1 + head) / 3
+            for (l, strand) in zip(tails, Self.strands) {
+                l.strokeEnd = end
+                l.strokeStart = (1 + head - Self.tailLength * strand.length) / 3
+            }
+            glowStrand.strokeEnd = end
+            glowStrand.strokeStart = (1 + head - Self.tailLength * 0.6) / 3
+            headDot.position = rim.point(at: head)
+        }
     }
 
     /// On each beat the snake brightens and decays over the beat — a struck

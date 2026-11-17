@@ -151,7 +151,7 @@ struct UndoButton: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        if let label = model.engine.snapshot.undoLabel {
+        if let label = model.engine.player.undoLabel {
             Button {
                 model.undoQueueEdit()
             } label: {

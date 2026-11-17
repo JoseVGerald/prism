@@ -10,7 +10,9 @@ final class Engine: NSObject {
 
     // MARK: Observable state
 
-    var snapshot = EngineSnapshot(
+    /// The latest whole reading from the page, for logic. Not observed:
+    /// views read `player`, which changes a fact at a time.
+    @ObservationIgnored private(set) var snapshot = EngineSnapshot(
         ready: false, signedIn: false, state: -1, currentTime: 0, duration: 0,
         volume: 100, muted: false, repeatMode: "NONE", shuffled: false,
         track: nil, queue: [], queueIndex: -1, undoLabel: nil)
@@ -46,10 +48,25 @@ final class Engine: NSObject {
         }
     }
 
+    /// The same state for views, a property at a time — see `PlayerState`.
+    /// Views read this; `snapshot` is for code that wants the whole reading.
+    let player = PlayerState()
+
+    /// Called with each snapshot whose position or song differs from the
+    /// last: the funnel for everything that follows playback — the listening
+    /// log, the system Now Playing tile, crossfade timing, lyrics. The second
+    /// argument says the song changed.
+    ///
+    /// A callback rather than a view's `onChange`, which is what it was: the
+    /// root view had to be re-evaluated every second just to notice.
+    @ObservationIgnored var onProgress: ((EngineSnapshot, Bool) -> Void)?
+    /// Called when the track gains or loses a picture worth showing.
+    @ObservationIgnored var onHasVideo: ((Bool) -> Void)?
+
     /// While the user drags the scrubber we stop letting engine ticks fight them.
     var scrubOverride: Double?
 
-    var displayTime: Double { scrubOverride ?? snapshot.currentTime }
+    var displayTime: Double { scrubOverride ?? player.currentTime }
 
     /// When the current snapshot arrived.
     private(set) var snapshotAt = Date()
@@ -552,8 +569,11 @@ extension Engine: WKScriptMessageHandler {
         switch envelope.kind {
         case "snapshot":
             if let snap = try? JSONDecoder().decode(EngineSnapshot.self, from: data) {
-                if snap.track?.videoId != snapshot.track?.videoId { logTrackChange(snap) }
+                let old = snapshot
+                let songChanged = snap.track?.videoId != old.track?.videoId
+                if songChanged { logTrackChange(snap) }
                 snapshot = snap
+                player.take(snap)
                 if currentVideoId != snap.track?.videoId { currentVideoId = snap.track?.videoId }
                 if isReady != snap.ready { isReady = snap.ready }
                 if isSignedIn != snap.signedIn { isSignedIn = snap.signedIn }
@@ -565,6 +585,8 @@ extension Engine: WKScriptMessageHandler {
                    clock.map({ Date().timeIntervalSince($0.at) > 2 }) ?? true {
                     run("clock", [true])
                 }
+                if songChanged || snap.currentTime != old.currentTime { onProgress?(snap, songChanged) }
+                if snap.hasVideo != old.hasVideo { onHasVideo?(snap.hasVideo) }
             }
         case "clock":
             if let r = try? JSONDecoder().decode(ClockReading.self, from: data) {

@@ -91,6 +91,16 @@ struct AmbientLight: View {
 
     var body: some View {
         ZStack {
+            #if canImport(AppKit)
+            // Core Animation on the Mac — see `RimLayer` for why not a canvas
+            // on a timeline. This view is re-evaluated only when what the
+            // light is made of changes.
+            RimHost(settings: RimSettings(
+                cycle: colours.dropLast().map(\.prismRGBA), accent: palette.accent.prismRGBA,
+                drift: drift, thickness: thickness, glow: glow, corner: corner, inset: inset,
+                animating: animating, beatPeriod: beatPeriod, pulse: pulse,
+                hearing: audio != nil, flow: flow), audio: audio)
+            #else
             TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !animating)) { tl in
                 let t = tl.date.timeIntervalSinceReferenceDate
                 ring(at: t)
@@ -99,6 +109,7 @@ struct AmbientLight: View {
             // the CPU into a window-sized bitmap, three blurred passes of it,
             // thirty times a second.
             .drawingGroup()
+            #endif
             if flow {
                 FlowLine(accent: drift ? ArtPalette.desaturated(palette.accent, amount: 0.9)
                                        : palette.accent,

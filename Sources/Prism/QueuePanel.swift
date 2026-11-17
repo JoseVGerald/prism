@@ -12,7 +12,7 @@ struct QueuePanel: View {
     /// list part around the row instead of just drawing an insertion line.
     @State private var dragFrom: Int?
     @State private var dragBy: CGFloat = 0
-    private var snap: EngineSnapshot { model.engine.snapshot }
+    private var snap: PlayerState { model.engine.player }
 
     private static let stride: CGFloat = QueueRow.height + 2
     private static let motion = Animation.spring(response: 0.36, dampingFraction: 0.86)
@@ -279,7 +279,7 @@ private struct QueueRow: View {
                         if isCurrent {
                             RoundedRectangle(cornerRadius: 5, style: .continuous)
                                 .fill(.black.opacity(0.5))
-                            Image(systemName: model.engine.snapshot.playback.isPlaying
+                            Image(systemName: model.engine.player.isPlaying
                                   ? "speaker.wave.2.fill" : "pause.fill")
                                 .font(.system(size: 11))
                                 .foregroundStyle(Color.accentColor)

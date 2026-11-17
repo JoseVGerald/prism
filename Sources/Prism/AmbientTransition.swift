@@ -13,7 +13,7 @@ enum AmbientTransition {
     /// 0…1, or nil when no hand-over is under way.
     @MainActor
     static func progress(model: AppModel, at date: Date, handover: Handover) -> Double? {
-        let current = model.engine.snapshot.track?.videoId
+        let current = model.engine.player.track?.videoId
         let raw: Double? = {
             if let clock = model.transitions.fadeClock {
                 // The fade outlives its song by a second or two while the two
@@ -24,7 +24,7 @@ enum AmbientTransition {
                 return min(max(date.timeIntervalSince(clock.began) / clock.length, 0), 1)
             }
             guard model.nextEntry != nil else { return nil }
-            let d = model.engine.snapshot.duration
+            let d = model.engine.player.duration
             guard d > fallbackWindow * 2 else { return nil }
             let remaining = d - model.engine.smoothTime(at: date)
             guard remaining < fallbackWindow else { return nil }
@@ -63,7 +63,7 @@ enum AmbientTransition {
         var holding: Bool { holdingSince != nil }
 
         func update(_ raw: Double?, model: AppModel, at date: Date) -> Double? {
-            let current = model.engine.snapshot.track?.videoId
+            let current = model.engine.player.track?.videoId
 
             if let since = holdingSince, let target = incoming?.videoId {
                 // Arrived, or something else is playing now (a skip), or it

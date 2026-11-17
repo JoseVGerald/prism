@@ -20,10 +20,10 @@ struct PrismApp: App {
             CommandGroup(replacing: .undoRedo) {
                 Button(undoTitle) { model.undoQueueEdit() }
                     .keyboardShortcut("z", modifiers: .command)
-                    .disabled(model.engine.snapshot.undoLabel == nil)
+                    .disabled(model.engine.player.undoLabel == nil)
             }
             CommandMenu("Playback") {
-                Button(model.engine.snapshot.playback.isPlaying ? "Pause" : "Play") {
+                Button(model.engine.player.isPlaying ? "Pause" : "Play") {
                     model.engine.togglePlayPause()
                 }
                 .keyboardShortcut(.space, modifiers: .command)
@@ -72,7 +72,7 @@ struct PrismApp: App {
     }
 
     private var undoTitle: String {
-        if let label = model.engine.snapshot.undoLabel { return "Undo \(label)" }
+        if let label = model.engine.player.undoLabel { return "Undo \(label)" }
         return "Undo"
     }
 }

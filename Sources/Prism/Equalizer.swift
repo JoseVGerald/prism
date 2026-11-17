@@ -21,14 +21,34 @@ struct EqualizerView: View {
     var maxBlocks: Int = 8
     var block: CGFloat = 7
     var gap: CGFloat = 3
-    /// Frames per second. Every frame costs a full layout and vibrancy pass of
-    /// whatever view hosts it, so the menu-bar chip — three columns, 26pt wide —
-    /// is not worth the same rate as the pair either side of the cover art.
+    /// Steps per second of the decorative motion. Hearing the song, the bars
+    /// step at least twenty times a second whatever this says.
     var fps: Double = 15
 
     @State private var holder = "equalizer \(UUID().uuidString)"
 
     var body: some View {
+        bars
+            .allowsHitTesting(false)
+            // Capture runs only while an equalizer that wants it is on screen and
+            // the music is playing.
+            .onAppear { audio?.hold(holder, isPlaying) }
+            .onChange(of: isPlaying) { _, playing in audio?.hold(holder, playing) }
+            .onDisappear { audio?.hold(holder, false) }
+    }
+
+    #if canImport(AppKit)
+    /// Core Animation moves the bars on the Mac — see `EqualizerBarsView` for
+    /// why not a timeline. This view is only re-evaluated when the artwork's
+    /// colours or the play state change.
+    private var bars: some View {
+        EqualizerHost(look: EqualizerLook(
+            top: palette.top.prismRGBA, mid: palette.mid.prismRGBA, bottom: palette.bottom.prismRGBA,
+            mirrored: mirrored, seed: seed, maxBlocks: maxBlocks, block: block, gap: gap,
+            fps: fps, playing: isPlaying), audio: audio)
+    }
+    #else
+    private var bars: some View {
         // One Canvas, no SwiftUI blur. Blurred glow layers meant an offscreen
         // gaussian every frame for each of two equalizers, which sat at ~30%
         // CPU forever. The halo below is painted instead, for the same look at
@@ -39,17 +59,8 @@ struct EqualizerView: View {
                                 paused: !isPlaying)) { tl in
             blocks(tl.date.timeIntervalSinceReferenceDate)
         }
-        // Painted by Metal rather than on the CPU. Profiled with the window in
-        // front, these two equalizers were the main thread's largest cost —
-        // hundreds of blocks a frame rasterised in software — enough to delay
-        // clicks. Stepped LED bars also lose nothing at 15fps.
+        // Painted by Metal rather than on the CPU.
         .drawingGroup()
-        .allowsHitTesting(false)
-        // Capture runs only while an equalizer that wants it is on screen and
-        // the music is playing.
-        .onAppear { audio?.hold(holder, isPlaying) }
-        .onChange(of: isPlaying) { _, playing in audio?.hold(holder, playing) }
-        .onDisappear { audio?.hold(holder, false) }
     }
 
     private func blocks(_ t: Double) -> some View {
@@ -161,4 +172,5 @@ struct EqualizerView: View {
         let shaped = n < 0.5 ? 2 * n * n : 1 - 2 * (1 - n) * (1 - n)
         return min(max(shaped, 0.05), 1)
     }
+    #endif
 }
