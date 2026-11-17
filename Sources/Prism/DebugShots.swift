@@ -66,14 +66,26 @@ enum DebugShots {
         // 3: the playing artwork's colours, as the window shows them.
         // 4: the same, moving — breathing; 5: on a 0.5s beat; 6: idle drift.
         let real = mode >= 3
+        let moving = (4...6).contains(mode)
         let cycle = real ? [palette.top, palette.accent, palette.mid].map(\.prismRGBA) : [grey, grey, grey]
-        host.debugAlwaysSeen = mode >= 4
-        host.settings = RimSettings(cycle: cycle, accent: grey, drift: mode == 1 || mode == 6,
+        host.debugAlwaysSeen = moving
+        host.settings = RimSettings(cycle: cycle, accent: grey, drift: mode == 1 || mode == 6 || mode == 7,
                                     thickness: real ? 2 : 5, glow: real ? 0.7 : 1,
-                                    corner: 12, inset: real ? 7 : 10, animating: mode >= 4,
-                                    beatPeriod: mode == 5 ? 0.5 : nil, pulse: mode >= 4 ? 0.8 : 0,
+                                    corner: 12, inset: real ? 7 : 10, animating: moving,
+                                    beatPeriod: mode == 5 ? 0.5 : nil, pulse: moving ? 0.8 : 0,
                                     hearing: false, flow: true)
         benchHost = host
+        // 7: the flowing line over it, nothing playing (stepped by the timer).
+        // 8: playing at 120 BPM (a running animation).
+        if mode == 7 || mode == 8 {
+            let flow = FlowHostView(frame: host.bounds)
+            flow.autoresizingMask = [.width, .height]
+            flow.debugAlwaysSeen = true
+            host.addSubview(flow)
+            flow.settings = FlowSettings(accent: palette.accent.prismRGBA, playing: mode == 8,
+                                         thickness: 2, inset: 7, corner: 12, animating: true,
+                                         depth: 0.8, tempo: 0.5)
+        }
         w.orderFrontRegardless()
         bench = w
         return "rim bench \(mode) window \(w.windowNumber)"

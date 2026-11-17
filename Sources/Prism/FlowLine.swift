@@ -119,9 +119,13 @@ final class FlowHostView: NSView {
     /// `FlowLayer.crawl`), not by a running animation.
     private var crawling = false
 
+    /// Debug (PRISM_EVAL): treat this view's window as seen even where it
+    /// cannot be, so the hidden test bench moves.
+    var debugAlwaysSeen = false
+
     private func push() {
         guard var s = settings else { return }
-        let seen = window?.occlusionState.contains(.visible) == true
+        let seen = debugAlwaysSeen || window?.occlusionState.contains(.visible) == true
         s.animating = s.animating && seen
         flow.apply(s)
         let wasListening = listening
