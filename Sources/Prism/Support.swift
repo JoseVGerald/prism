@@ -103,11 +103,11 @@ final class ArtworkCache {
         init(_ image: CGImage) { self.image = image }
     }
 
-    /// Decoded bitmaps, by URL. About 200 MB before the oldest are let go —
-    /// several thousand thumbnails, or a couple of hundred full-size covers.
+    /// Decoded bitmaps, by URL. About 128 MB before the oldest are let go —
+    /// a couple of thousand thumbnails, or a hundred full-size covers.
     private let images: NSCache<NSString, Entry> = {
         let cache = NSCache<NSString, Entry>()
-        cache.totalCostLimit = 200 * 1024 * 1024
+        cache.totalCostLimit = 128 * 1024 * 1024
         return cache
     }()
     private var loading: [String: Task<Decoded?, Never>] = [:]

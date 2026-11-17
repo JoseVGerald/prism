@@ -562,9 +562,21 @@ extension Engine: WKScriptMessageHandler {
     func userContentController(_ controller: WKUserContentController,
                                didReceive message: WKScriptMessage) {
         guard let body = message.body as? String,
-              let data = body.data(using: .utf8),
-              let envelope = try? JSONDecoder().decode(Envelope.self, from: data)
-        else { return }
+              let data = body.data(using: .utf8) else { return }
+        // The two kinds that arrive all the time say what they are in their
+        // first bytes — the bridge writes `kind` first — so they are not
+        // decoded twice, once to learn the kind and once for the contents.
+        // A snapshot carries the whole queue, every second.
+        let envelope: Envelope
+        if body.hasPrefix("{\"kind\":\"snapshot\"") {
+            envelope = Envelope(kind: "snapshot", requestId: nil, message: nil)
+        } else if body.hasPrefix("{\"kind\":\"clock\"") {
+            envelope = Envelope(kind: "clock", requestId: nil, message: nil)
+        } else if let decoded = try? JSONDecoder().decode(Envelope.self, from: data) {
+            envelope = decoded
+        } else {
+            return
+        }
 
         switch envelope.kind {
         case "snapshot":

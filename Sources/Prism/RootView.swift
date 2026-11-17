@@ -563,7 +563,7 @@ private struct CompactControls: View {
             // button off centre and the whole panel reads as misaligned.
 
             PlaybackScrubber(engine: engine, spacing: 10, labelWidth: 42, scrubberWidth: 420,
-                             labels: AnyShapeStyle(.white.opacity(0.7)))
+                             labels: AnyShapeStyle(.white.opacity(0.7)), live: model.windowVisible)
         }
         .padding(.horizontal, 22).padding(.vertical, 16)
         .glassEffect(.regular, in: .rect(cornerRadius: 24))

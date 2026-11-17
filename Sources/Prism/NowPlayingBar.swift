@@ -74,7 +74,7 @@ struct NowPlayingBar: View {
                         .help("Repeat: \(snap.repeatMode?.capitalized ?? "none")")
                 }
 
-                PlaybackScrubber(engine: engine)
+                PlaybackScrubber(engine: engine, live: model.windowVisible)
         }
     }
 
@@ -130,13 +130,21 @@ struct PlaybackScrubber: View {
     var labelWidth: CGFloat = 40
     var scrubberWidth: CGFloat? = nil
     var labels: AnyShapeStyle = AnyShapeStyle(.secondary)
+    /// False while the window cannot be seen. The position is then not read
+    /// at all, so the clock ticking over redraws nothing — with the window
+    /// behind another app, this was the last thing in it still being laid
+    /// out every second.
+    var live = true
+
+    @State private var held = 0.0
 
     var body: some View {
+        let time = live ? engine.displayTime : held
         HStack(spacing: spacing) {
-            Text(timeString(engine.displayTime))
+            Text(timeString(time))
                 .font(.caption2.monospacedDigit()).foregroundStyle(labels)
                 .frame(width: labelWidth, alignment: .trailing)
-            Scrubber(value: engine.displayTime, total: engine.player.duration) { t in
+            Scrubber(value: time, total: engine.player.duration) { t in
                 engine.scrubOverride = t
             } onCommit: { t in
                 engine.seek(to: t)
@@ -147,5 +155,6 @@ struct PlaybackScrubber: View {
                 .font(.caption2.monospacedDigit()).foregroundStyle(labels)
                 .frame(width: labelWidth, alignment: .leading)
         }
+        .onChange(of: live) { _, now in if !now { held = engine.displayTime } }
     }
 }
