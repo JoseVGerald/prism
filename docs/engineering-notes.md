@@ -1021,6 +1021,50 @@ starts at first play and lives only in
 The feed is genuinely good for *"what have I been listening to lately"* — which
 is the For You page's job.
 
+### What costs CPU here, measured
+
+Prism is mostly idle work: a player sits in the background for hours. Three
+things were costing a steady slice of a core, and each is easy to walk back
+into.
+
+**A view that reads `Engine.snapshot` redraws every second.** The snapshot is
+replaced whole about once a second because the position is in it, so reading
+any field of it in a `body` — the title, the queue — meant that view rebuilt
+every second for a song that had not changed. That was the queue, the
+transport, the notch, the root view, *and the app's menus*. Views read
+`engine.player` (`PlayerState`) instead: one observable property per fact,
+written only when it differs. The ticking position is isolated in
+`PlaybackScrubber`, which stops reading it while its window is covered.
+`snapshot` itself is `@ObservationIgnored`, for logic only.
+
+**A `TimelineView` re-runs SwiftUI every frame; a layer does not.** The rim,
+the equalizers and the flowing line are Core Animation layers
+(`RimLayer`, `EqualizerBarsView`, `FlowLayer`). The equalizer's trick is one
+painted column seen through a window per column; the rim's is one conic
+gradient seen through pre-blurred masks of its three passes. A frame is then
+a few properties set from a timer.
+
+**Every changed frame costs the window server about the same, whatever
+changed.** Measured in the full-screen ambient window: a 10pt square fading at
+60fps cost WindowServer as much as the whole rim. Animations handed to the
+render server run at the display's rate, so anything slow is *stepped from a
+timer instead* at the lowest rate its motion needs — the rim's colour 4 times a
+second when idle, the lyrics backdrop 10, the paused flowing line 20. Only a
+line racing round at the song's tempo is left as a real animation.
+
+Everything that moves also stops when its window is covered (occlusion state,
+which the screen saver and a sleeping display both change), and the audio
+capture is held only while something that shows it can be seen.
+
+Numbers, same Mac, same song: playing in the background went from 9.2% of a
+core to 2.5% (main thread from a sixth busy to under 1%); the idle ambient
+screen from 14% to under 1%. The web player's own processes are another 4–7%
+and are YouTube's code.
+
+Debug hooks for all of this are `PRISM_EVAL` commands in `app.cmd`: `eqShot`,
+`rimBench`, `uiBench` (panes rendered in a window behind the desktop, so they
+can be captured without bringing the app forward), `probe`, `flag`.
+
 ## Where the stats come from
 
 Three sources, and only two of them are allowed near the numbers.
